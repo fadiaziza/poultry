@@ -11,7 +11,6 @@ import torch
 from sentence_transformers import SentenceTransformer, util
 import gradio as gr
 import gdown
-
 # --- تنزيل كافة الكتالوجات والصور من Google Drive تلقائياً ---
 FOLDER_ID = "15Dj0_9rrvjAot3cNzaRPOLsdWakJJ5_V"
 FLAG_FILE = ".drive_downloaded"
