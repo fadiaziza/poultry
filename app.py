@@ -267,4 +267,4 @@ with gr.Blocks(title="منصة الدعم الهندسي - التعرف البص
 
     gr.HTML(footer_markdown)
 
-demo.launch(server_name="0.0.0.0", server_port=8501)
+demo.launch(share=True)
