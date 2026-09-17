@@ -16,20 +16,23 @@ import streamlit as st
 st.set_page_config(page_title="منصة الدعم الهندسي - مسلخ عزيزا", layout="wide")
 
 # ==========================================
+# ==========================================
 # 1. تنزيل وفك ضغط الكتالوجات تلقائياً
 # ==========================================
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 FILE_ID = "1jDTo_gaulygHfewtm49SFUy0cg3X-BNS"
-ZIP_NAME = "manuals.zip"
-FLAG_FILE = ".manuals_downloaded_v3"
+ZIP_PATH = os.path.join(BASE_DIR, "manuals.zip")
+FLAG_FILE = os.path.join(BASE_DIR, ".manuals_downloaded_v3")
 
 if not os.path.exists(FLAG_FILE):
     try:
         url = f"https://drive.google.com/uc?id={FILE_ID}"
-        gdown.download(url, ZIP_NAME, quiet=False)
-        if os.path.exists(ZIP_NAME):
-            with zipfile.ZipFile(ZIP_NAME, 'r') as zip_ref:
-                zip_ref.extractall(".")
-            os.remove(ZIP_NAME)
+        gdown.download(url, ZIP_PATH, quiet=False)
+        if os.path.exists(ZIP_PATH):
+            with zipfile.ZipFile(ZIP_PATH, 'r') as zip_ref:
+                zip_ref.extractall(BASE_DIR)
+            if os.path.exists(ZIP_PATH):
+                os.remove(ZIP_PATH)
             with open(FLAG_FILE, "w") as f:
                 f.write("done")
     except Exception as e:
