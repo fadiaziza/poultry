@@ -12,9 +12,9 @@ st.set_page_config(page_title="منصة الدعم الفني الهندسي", l
 # -------------------------------------------------------------
 # 1. تنزيل وفك ضغط ملف manuals.zip من Google Drive تلقائياً
 # -------------------------------------------------------------
-FILE_ID = "1IyoK2zvFm9_Wt98_J9TcLO4BoOXBP-FE"
+FILE_ID = "1jDTo_gaulygHfewtm49SFUy0cg3X-BNS"
 ZIP_NAME = "manuals.zip"
-FLAG_FILE = ".manuals_downloaded"
+FLAG_FILE = ".manuals_downloaded_v3"
 
 if not os.path.exists(FLAG_FILE):
     try:
