@@ -1,0 +1,8 @@
+gradio
+pymupdf
+sentence-transformers
+torch
+torchvision
+pillow
+requests
+pytz
