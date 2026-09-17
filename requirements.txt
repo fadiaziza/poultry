@@ -1,4 +1,4 @@
-gradio
+streamlit
 pymupdf
 sentence-transformers
 torch
