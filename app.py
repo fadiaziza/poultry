@@ -244,27 +244,28 @@ footer_markdown = """
 with gr.Blocks(title="منصة الدعم الهندسي - التعرف البصري على القطع") as demo:
     gr.HTML(header_markdown)
 
-    gr.Markdown("""
-    * **فحص القطعة بالصورة:** التقط صورة واضحة للقطعة الميكانيكية (أو ارفعها من الهاتف)، وسيتعرف النظام على شكلها، يستخرج رقمها المصنعي، ويحدد كافة الماكينات المشتركة ورقم الصفحة.
-    * **البحث النصي البديل:** يمكنك أيضاً كتابة رقم القطعة مباشرة إذا كان متوفراً لديك.
-    """)
+    import streamlit as st
 
-    with gr.Row():
-        with gr.Column(scale=1):
-            cam_box = gr.Image(sources=["upload", "webcam"], type="pil", label="📷 تصوير القطعة أو رفع صورة من الهاتف")
-            text_box = gr.Textbox(lines=1, label="📝 أو اكتب رقم القطعة مباشرة (اختياري)", placeholder="مثال: 0000.D475.000.94")
-            search_btn = gr.Button("🔍 فحص ومطابقة القطعة بالكتالوجات", variant="primary")
+st.set_page_config(page_title="منصة الدعم الفني الهندسي", layout="wide")
 
-        with gr.Column(scale=1):
-            info_output = gr.Markdown(label="📋 التقرير الفني والمطابقة")
-            matched_image_display = gr.Image(label="🖼️ القطعة المطابقة من أرشيف المستودع", visible=True)
+if os.path.exists("logo.png"):
+    st.image("logo.png", width=150)
 
-    search_btn.click(
-        fn=visual_maintenance_copilot,
-        inputs=[cam_box, text_box],
-        outputs=[info_output, matched_image_display]
-    )
+st.title("🛠️ منصة الدعم الفني الهندسي والمطابقة الذكية")
+st.markdown("فحص القطع ومطابقتها مع كتالوجات الصيانة والماكينات المعتمدة.")
 
-    gr.HTML(footer_markdown)
+col1, col2 = st.columns(2)
 
-demo.launch(share=True)
+with col1:
+    uploaded_file = st.file_uploader("📷 التقط صورة أو ارفع صورة القطعة:", type=["jpg", "jpeg", "png"])
+    manual_code = st.text_input("📝 أو أدخل رقم القطعة مباشرة (اختياري):")
+    submit_btn = st.button("🔍 فحص ومطابقة القطعة بالكتالوجات", type="primary")
+
+with col2:
+    if submit_btn:
+        img = Image.open(uploaded_file) if uploaded_file else None
+        with st.spinner("جاري التحليل والمطابقة في الكتالوجات..."):
+            report_text, matched_img = visual_maintenance_copilot(img, manual_code)
+            st.markdown(report_text)
+            if matched_img:
+                st.image(matched_img, caption="القطعة المطابقة من أرشيف الكتالوجات")
