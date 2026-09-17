@@ -76,32 +76,47 @@ def load_visual_engine():
 
 visual_model = load_visual_engine()
 
-@st.cache_resource(show_spinner="جاري بناء البصمات البصرية لصور المستودع...")
+@st.cache_resource(show_spinner="جاري تجهيز فهرس الصور السريع...")
 def build_visual_database():
     image_paths = []
-    image_embeddings = []
     
-    # البحث في كافة مجلدات الصور الحقيقية المستخرجة
+    # تحديد امتدادات الصور
     valid_exts = ("*.png", "*.jpg", "*.jpeg", "*.webp")
     all_imgs = []
+    
+    # البحث المباشر في مجلد الصور الحقيقية لتجنب فحص السيرفر بالكامل
     for ext in valid_exts:
-        all_imgs.extend(glob.glob(f"**/{ext}", recursive=True))
+        all_imgs.extend(glob.glob(f"**/Real_Parts_Images/**/{ext}", recursive=True))
+        all_imgs.extend(glob.glob(f"**/Images/**/{ext}", recursive=True))
+    
+    # إذا لم يجد داخل المجلد المحدد، يبحث في المجلدات القريبة فقط
+    if not all_imgs:
+        for ext in valid_exts:
+            all_imgs.extend(glob.glob(f"*{ext}"))
+            all_imgs.extend(glob.glob(f"*/*{ext}"))
 
-    # استبعاد ملفات الشعار من صور المستودع
+    # استبعاد الشعار
     all_imgs = [p for p in all_imgs if "logo" not in os.path.basename(p).lower()]
 
-    for path in all_imgs:
+    if not all_imgs:
+        return None, []
+
+    # معالجة الصور دفعة واحدة سريعة (Batching) بدلاً من صورة صورة
+    valid_pil = []
+    valid_paths = []
+    for path in all_imgs[:150]:  # فحص أول 150 صورة كحد أقصى لمنع تعليق السيرفر
         try:
             img = Image.open(path).convert('RGB')
-            emb = visual_model.encode(img, convert_to_tensor=True)
-            image_embeddings.append(emb)
-            image_paths.append(path)
+            valid_pil.append(img)
+            valid_paths.append(path)
         except Exception:
             continue
 
-    if image_embeddings:
-        stacked_index = torch.stack(image_embeddings)
-        return stacked_index, image_paths
+    if valid_pil:
+        with torch.no_grad():
+            embeddings = visual_model.encode(valid_pil, convert_to_tensor=True, batch_size=32, show_progress_bar=False)
+        return embeddings, valid_paths
+    
     return None, []
 
 image_index, image_paths = build_visual_database()
