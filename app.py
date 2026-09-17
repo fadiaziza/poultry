@@ -10,7 +10,23 @@ from PIL import Image
 import torch
 from sentence_transformers import SentenceTransformer, util
 import gradio as gr
+import gdown
 
+# --- تنزيل كافة الكتالوجات والصور من Google Drive تلقائياً ---
+FOLDER_ID = "15Dj0_9rrvjAot3cNzaRPOLsdWakJJ5_V"
+FLAG_FILE = ".drive_downloaded"
+
+if not os.path.exists(FLAG_FILE):
+    print("⏳ جاري تنزيل كافة الكتالوجات والصور من Google Drive...")
+    try:
+        folder_url = f"https://drive.google.com/drive/folders/{FOLDER_ID}"
+        gdown.download_folder(folder_url, quiet=False, use_cookies=False)
+        with open(FLAG_FILE, "w") as f:
+            f.write("done")
+        print("✅ تم تنزيل جميع الكتالوجات والصور بنجاح!")
+    except Exception as e:
+        print(f"حدث خطأ أثناء تنزيل المجلد: {e}")
+# -------------------------------------------------------------
 # ==========================================
 # 1. إعدادات النظام وتنبيهات الواتساب
 # ==========================================
