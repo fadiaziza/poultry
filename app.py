@@ -1,19 +1,23 @@
 import os
 import glob
 import re
-import urllib.parse
 import zipfile
-import gdown
+from datetime import datetime
+import pytz
+import requests
 import fitz  # PyMuPDF
 from PIL import Image
+import torch
+from sentence_transformers import SentenceTransformer, util
+import gdown
 import streamlit as st
 
-# ضبط إعدادات الصفحة
-st.set_page_config(page_title="منصة الدعم الفني الهندسي ومطابقة الكتالوجات", layout="wide")
+# ضبط واجهة الصفحة
+st.set_page_config(page_title="منصة الدعم الهندسي - مسلخ عزيزا", layout="wide")
 
-# -------------------------------------------------------------
-# 1. تنزيل وفك ضغط الكتالوجات تلقائياً من Google Drive
-# -------------------------------------------------------------
+# ==========================================
+# 1. تنزيل وفك ضغط الكتالوجات تلقائياً
+# ==========================================
 FILE_ID = "1jDTo_gaulygHfewtm49SFUy0cg3X-BNS"
 ZIP_NAME = "manuals.zip"
 FLAG_FILE = ".manuals_downloaded_v3"
@@ -29,165 +33,236 @@ if not os.path.exists(FLAG_FILE):
             with open(FLAG_FILE, "w") as f:
                 f.write("done")
     except Exception as e:
-        print(f"خطأ أثناء تنزيل الملفات: {e}")
+        print(f"Download Error: {e}")
 
-# عرض الشعار إن وُجد
-if os.path.exists("logo.png"):
-    st.image("logo.png", width=140)
+# ==========================================
+# 2. إعدادات Green-API لتنبيهات الواتساب التلقائية
+# ==========================================
+ID_INSTANCE = "710722737613"
+API_TOKEN = "8902219901b2411cb1ebfa944bbfc3d7d499d671111c4fe18e"
+MY_PHONE = "970599431267"
 
-st.title("🛠️ منصة الدعم الفني الهندسي ومطابقة الكتالوجات")
-st.markdown("فحص القطع ومطابقتها الآلية مع كتالوجات ومخططات الصيانة المعتمدة لخطوط المسلخ.")
+def send_whatsapp_alert(query_text, info_summary):
+    """إرسال تنبيه صامت ومباشر إلى هاتفك عند كل فحص"""
+    try:
+        url = f"https://7107.api.greenapi.com/waInstance{ID_INSTANCE}/sendMessage/{API_TOKEN}"
+        local_tz = pytz.timezone("Asia/Gaza")
+        now_str = datetime.now(local_tz).strftime("%I:%M %p")
+        payload = {
+            "chatId": f"{MY_PHONE}@c.us",
+            "message": (
+                f"🏭 *مسلخ شركة دواجن فلسطين - فحص قطعة*\n"
+                f"⏰ الوقت: {now_str}\n"
+                f"🔍 الاستفسار: {query_text}\n"
+                f"📋 النتيجة: {info_summary}"
+            )
+        }
+        requests.post(url, json=payload, headers={'Content-Type': 'application/json'}, timeout=4)
+    except Exception as e:
+        print(f"⚠️ تعذر إرسال الواتساب: {e}")
 
-# -------------------------------------------------------------
-# 2. دوال المعالجة والبحث الخفيفة
-# -------------------------------------------------------------
-def clean_code(text):
-    return re.sub(r'[^a-zA-Z0-9]', '', str(text)).lower()
+# ==========================================
+# 3. نموذج الذكاء الاصطناعي وقاعدة البصمات البصرية
+# ==========================================
+@st.cache_resource(show_spinner="جاري تحميل نموذج الرؤية البصرية...")
+def load_visual_engine():
+    # ضبط خيوط المعالجة لمنع تجاوز استهلاك السيرفر
+    torch.set_num_threads(1)
+    model = SentenceTransformer('clip-ViT-B-32', device='cpu')
+    return model
 
-@st.cache_resource(show_spinner="جاري قراءة وفهرسة كافة الكتالوجات الهندسية...")
-def build_lightweight_index():
-    pdf_files = glob.glob("*.pdf") + glob.glob("**/*.pdf", recursive=True)
-    catalog_data = []
+visual_model = load_visual_engine()
 
-    for pdf_path in pdf_files:
-        machine_name = os.path.basename(pdf_path).replace(".pdf", "")
+@st.cache_resource(show_spinner="جاري بناء البصمات البصرية لصور المستودع...")
+def build_visual_database():
+    image_paths = []
+    image_embeddings = []
+    
+    # البحث في كافة مجلدات الصور الحقيقية المستخرجة
+    valid_exts = ("*.png", "*.jpg", "*.jpeg", "*.webp")
+    all_imgs = []
+    for ext in valid_exts:
+        all_imgs.extend(glob.glob(f"**/{ext}", recursive=True))
+
+    # استبعاد ملفات الشعار من صور المستودع
+    all_imgs = [p for p in all_imgs if "logo" not in os.path.basename(p).lower()]
+
+    for path in all_imgs:
+        try:
+            img = Image.open(path).convert('RGB')
+            emb = visual_model.encode(img, convert_to_tensor=True)
+            image_embeddings.append(emb)
+            image_paths.append(path)
+        except Exception:
+            continue
+
+    if image_embeddings:
+        stacked_index = torch.stack(image_embeddings)
+        return stacked_index, image_paths
+    return None, []
+
+image_index, image_paths = build_visual_database()
+
+def find_part_by_image(uploaded_pil):
+    """مقارنة صورة الفني مع صور المستودع"""
+    if image_index is None or len(image_paths) == 0:
+        return None, 0.0
+
+    uploaded_rgb = uploaded_pil.convert('RGB')
+    query_emb = visual_model.encode(uploaded_rgb, convert_to_tensor=True)
+    cos_scores = util.cos_sim(query_emb, image_index)[0]
+    best_idx = torch.argmax(cos_scores).item()
+    best_score = float(cos_scores[best_idx])
+
+    if best_score > 0.65:
+        return image_paths[best_idx], best_score
+    return None, best_score
+
+# ==========================================
+# 4. محرك البحث الهجين داخل الكتالوجات (Meyn / Automac)
+# ==========================================
+def search_part_in_manuals(raw_input, target_category="الكل"):
+    clean_input = raw_input.strip()
+    core_match = re.search(r'(\d{3,4}[\.\-_]\d{3,4}[\.\-_]\d{2,4})', clean_input)
+    core_number = core_match.group(1) if core_match else clean_input
+
+    search_targets = {clean_input, core_number, f"D{core_number}", f"C{core_number}", core_number.replace(".", "")}
+    valid_targets = [re.escape(t) for t in search_targets if len(t) >= 4]
+    if not valid_targets:
+        valid_targets = [re.escape(clean_input)]
+    search_regex = re.compile("|".join(valid_targets), re.IGNORECASE)
+
+    all_pdfs = glob.glob("**/*.pdf", recursive=True)
+    matches = []
+
+    for pdf_path in all_pdfs:
+        doc_name = os.path.basename(pdf_path)
+        
+        # تصنيف ماكينات التغليف والأقسام
+        if target_category == "ماكينات التغليف (Automac / Packaging)":
+            if not any(k in pdf_path.lower() for k in ["automac", "pack", "wrap", "tray"]):
+                continue
+        elif target_category == "ماكينات الذبح والتجهيز (Meyn)":
+            if any(k in pdf_path.lower() for k in ["automac", "wrap"]):
+                continue
+
         try:
             doc = fitz.open(pdf_path)
             for page_num in range(len(doc)):
-                page = doc[page_num]
-                raw_text = page.get_text("text")
-                if raw_text.strip():
-                    catalog_data.append({
+                text = doc[page_num].get_text()
+                if search_regex.search(text):
+                    lines = [l.strip() for l in text.split("\n") if l.strip()]
+                    snippet = []
+                    for i, line in enumerate(lines):
+                        if search_regex.search(line):
+                            snippet = lines[max(0, i - 1):min(len(lines), i + 4)]
+                            break
+                    matches.append({
                         "file_path": pdf_path,
-                        "machine": machine_name,
-                        "page_num": page_num,
-                        "raw_text": raw_text,
-                        "clean_text": clean_code(raw_text)
+                        "doc_name": doc_name,
+                        "machine_name": doc_name.replace(".pdf", ""),
+                        "page": page_num + 1,
+                        "details": " | ".join(snippet) if snippet else "مطابقة مسجلة في جدول الكتالوج."
                     })
+                    break
             doc.close()
         except Exception:
             continue
-    return catalog_data
-
-catalog_index = build_lightweight_index()
+    return matches
 
 def get_page_snapshot(pdf_path, page_num):
     try:
         doc = fitz.open(pdf_path)
         if 0 <= page_num < len(doc):
-            page = doc[page_num]
-            pix = page.get_pixmap(dpi=150)
+            pix = doc[page_num].get_pixmap(dpi=150)
             img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
             doc.close()
             return img
         doc.close()
         return None
-    except Exception as e:
-        st.error(f"خطأ أثناء استخراج الرسم: {e}")
+    except Exception:
         return None
 
-def find_real_part_image(target_clean):
-    image_extensions = ('*.jpg', '*.jpeg', '*.png', '*.webp')
-    for ext in image_extensions:
-        for img_path in glob.glob(f"**/{ext}", recursive=True):
-            clean_name = clean_code(os.path.splitext(os.path.basename(img_path))[0])
-            if target_clean and (target_clean in clean_name or clean_name in target_clean):
-                return img_path
-    return None
+# ==========================================
+# 5. واجهة المستخدم الرسمية
+# ==========================================
+st.markdown("""
+<div style="background-color: #1a365d; padding: 15px; border-radius: 10px; margin-bottom: 20px; color: white; text-align: center;">
+    <h2 style="margin:0;">منصة الدعم الهندسي - مسلخ شركة دواجن فلسطين</h2>
+    <p style="margin:5px 0 0 0; font-size: 14px; opacity: 0.9;">نظام الرؤية البصرية ومطابقة الكتالوجات (Meyn & Automac Packaging)</p>
+</div>
+""", unsafe_allow_html=True)
 
-# -------------------------------------------------------------
-# 3. واجهة المستخدم والتفاعل
-# -------------------------------------------------------------
-col1, col2 = st.columns([1, 1])
+col_left, col_right = st.columns([1, 1])
 
-with col1:
-    st.subheader("🔍 إدخال بيانات القطعة")
-    uploaded_file = st.file_uploader("📷 ارفع صورة القطعة أو لوحة البيانات (Nameplate):", type=["jpg", "jpeg", "png"])
+with col_left:
+    st.subheader("📷 فحص القطعة أو لوحة البيانات")
+    category_option = st.selectbox(
+        "📂 نطاق الفحص والماكينة:",
+        ["الكل", "ماكينات التغليف (Automac / Packaging)", "ماكينات الذبح والتجهيز (Meyn)"]
+    )
     
-    inferred_code = ""
-    if uploaded_file:
-        st.image(uploaded_file, caption="صورة القطعة المرفوعة", width=250)
-        base_name = os.path.splitext(uploaded_file.name)[0]
-        match = re.search(r'[0-9a-zA-Z]+[0-9a-zA-Z\.\-_]*', base_name)
-        if match:
-            inferred_code = match.group(0)
+    uploaded_file = st.file_uploader("التقط صورة للقطعة أو ارفعها من الهاتف:", type=["jpg", "jpeg", "png", "webp"])
+    text_input = st.text_input("📝 أو أدخل رقم القطعة مباشرة (اختياري):", placeholder="مثال: 0000.D475.000.94 أو اسم القطعة")
+    search_btn = st.button("🔍 بدء الفحص والمطابقة الهندسية", type="primary", use_container_width=True)
 
-    part_query = st.text_input("📝 رقم القطعة (يُستخرج تلقائياً من الصورة أو اكتبه هنا):", value=inferred_code)
+with col_right:
+    st.subheader("📋 التقرير الفني والمطابقة")
     
-    # حقل اختياري لتحديد رقم واتساب المستلم (المهندس أو مسؤول المشتريات)
-    whatsapp_target = st.text_input("📱 رقم هاتف الواتساب للمستلم (مع المقدمة الدولية، مثال: 970599431267):", value="")
-    
-    search_button = st.button("🚀 فحص ومطابقة بالكتالوجات", type="primary", use_container_width=True)
+    if search_btn:
+        detected_code = ""
+        matched_image_path = None
+        sim_score = 0.0
 
-with col2:
-    st.subheader("📋 نتيجة المطابقة والرسم الهندسي")
-    
-    if search_button:
-        target_raw = part_query.strip()
-        target_clean = clean_code(target_raw)
+        # أ. التعرف البصري إذا تم رفع صورة
+        if uploaded_file is not None:
+            pil_img = Image.open(uploaded_file)
+            st.image(pil_img, caption="الصورة المدخلة للفحص", width=220)
+            
+            with st.spinner("🧠 جاري مطابقة الشكل مع بصمات صور المستودع..."):
+                matched_image_path, sim_score = find_part_by_image(pil_img)
+                
+            if matched_image_path:
+                detected_code = os.path.splitext(os.path.basename(matched_image_path))[0]
+                st.success(f"🎯 تم التعرف على القطعة بنسبة تطابق: `{int(sim_score * 100)}%`")
+                st.info(f"🏷️ رقم القطعة المصنعي: `{detected_code}`")
+            else:
+                st.warning(f"⚠️ نسبة التطابق البصري منخفضة ({int(sim_score * 100)}%). سيتم استخدام النص إن وُجد.")
 
-        if not target_clean:
-            st.warning("⚠️ الرجاء رفع صورة واضحة أو إدخال رقم القطعة للبدء بالفحص.")
+        # ب. تحديد الرمز النهائي المعتمد للبحث
+        final_query = text_input.strip() if text_input.strip() else detected_code
+
+        if not final_query:
+            st.error("الرجاء التقاط صورة واضحة للقطعة أو كتابة رقمها للبحث.")
         else:
-            with st.spinner("جاري فحص الكتالوجات والمخططات الهندسية..."):
-                matches = [
-                    item for item in catalog_index 
-                    if (target_clean in item["clean_text"]) or (target_raw.lower() in item["raw_text"].lower())
-                ]
+            with st.spinner("📖 جاري البحث في الكتالوجات والمخططات الهندسية..."):
+                records = search_part_in_manuals(final_query, category_option)
+                
+                # إرسال تنبيه فوري لحسابك على الواتساب
+                res_summary = f"ماكينة: {records[0]['machine_name']} - ص {records[0]['page']}" if records else "لم يُعثر على كتالوج مطابق"
+                send_whatsapp_alert(final_query, res_summary)
 
-                if matches:
-                    st.success(f"✅ تم العثور على {len(matches)} مطابقة للقطعة: `{target_raw}`")
-                    top_match = matches[0]
+                if records:
+                    top = records[0]
+                    st.write(f"🏭 **الماكينة:** `{top['machine_name']}`")
+                    st.write(f"📄 **الصفحة داخل الدليل:** صفحة **{top['page']}**")
+                    st.write(f"⚙️ **المواصفات المسجلة:** `{top['details']}`")
 
-                    st.markdown(f"**🏭 اسم الماكينة:** `{top_match['machine']}`")
-                    st.markdown(f"**📄 صفحة الجدول في الكتالوج:** `الصفحة {top_match['page_num'] + 1}`")
-                    st.markdown(f"**📁 اسم ملف الكتالوج:** `{os.path.basename(top_match['file_path'])}`")
-
-                    # زر إرسال تفاصيل المطابقة إلى الواتساب
-                    msg_text = (
-                        f"طلب قطعة غيار / مطابقة فنية:\n"
-                        f"الماكينة: {top_match['machine']}\n"
-                        f"رقم القطعة: {target_raw}\n"
-                        f"الكتالوج: {os.path.basename(top_match['file_path'])}\n"
-                        f"رقم الصفحة: {top_match['page_num'] + 1}"
-                    )
-                    encoded_msg = urllib.parse.quote(msg_text)
-                    phone_clean = re.sub(r'[^0-9]', '', whatsapp_target)
-                    wa_url = f"https://wa.me/{phone_clean}?text={encoded_msg}" if phone_clean else f"https://wa.me/?text={encoded_msg}"
-                    
-                    st.markdown(
-                        f'''<a href="{wa_url}" target="_blank" style="text-decoration:none;">
-                            <button style="background-color:#25D366; color:white; border:none; padding:10px 20px; font-size:16px; border-radius:8px; cursor:pointer; width:100%; margin-top:10px; font-weight:bold;">
-                                📲 إرسال بيانات القطعة عبر WhatsApp
-                            </button>
-                        </a>''',
-                        unsafe_allow_html=True
-                    )
-
-                    # 1. عرض الصورة الحقيقية إن وُجدت
-                    real_img_path = find_real_part_image(target_clean)
-                    if real_img_path:
-                        st.markdown("#### 📸 الصورة الحقيقية المعتمدة للقطعة:")
-                        st.image(real_img_path, caption=f"القطعة: {os.path.basename(real_img_path)}", width=300)
-
-                    # 2. عرض المخطط التفكيكي الهندسي
-                    st.markdown("#### 📐 المخطط التفكيكي وجدول أرقام الأجزاء:")
-                    prev_page_num = top_match['page_num'] - 1 if top_match['page_num'] > 0 else 0
-                    
-                    col_draw, col_tbl = st.columns(2)
-                    with col_draw:
-                        draw_img = get_page_snapshot(top_match["file_path"], prev_page_num)
-                        if draw_img:
-                            st.image(draw_img, caption=f"رسم المخطط التفكيكي (صفحة {prev_page_num + 1})", use_container_width=True)
-                    
-                    with col_tbl:
-                        table_img = get_page_snapshot(top_match["file_path"], top_match["page_num"])
-                        if table_img:
-                            st.image(table_img, caption=f"جدول القطع والأرقام (صفحة {top_match['page_num'] + 1})", use_container_width=True)
-
-                    if len(matches) > 1:
-                        st.info("ℹ️ صفحات أو ماكينات أخرى ذات صلة:")
-                        for other in matches[1:5]:
-                            st.write(f"- ماكينة: **{other['machine']}** (صفحة {other['page_num'] + 1})")
+                    # عرض صورة المستودع وصورة صفحة الكتالوج
+                    col_img1, col_img2 = st.columns(2)
+                    with col_img1:
+                        if matched_image_path:
+                            st.image(Image.open(matched_image_path), caption="صورة القطعة في المستودع", use_container_width=True)
+                    with col_img2:
+                        page_snapshot = get_page_snapshot(top["file_path"], top["page"] - 1)
+                        if page_snapshot:
+                            st.image(page_snapshot, caption=f"المخطط الهندسي (صفحة {top['page']})", use_container_width=True)
                 else:
-                    st.error(f"❌ لم يتم العثور على تطابق للرمز: `{target_raw}` داخل الكتالوجات المتوفرة.")
+                    st.error(f"❌ لم يتم العثور على أرقام مطابقة للرمز `{final_query}` داخل الكتالوجات المحددة.")
+
+st.markdown("""
+<hr style="margin-top:40px;">
+<p style="text-align:center; color:#718096; font-size:13px;">
+⚙️ تم تطوير المنصة بواسطة <strong>م. فادي محمود</strong> | قسم الصيانة والدعم الهندسي — مسلخ شركة دواجن فلسطين
+</p>
+""", unsafe_allow_html=True)
