@@ -1,4 +1,8 @@
 streamlit
 pymupdf
 pillow
+torch
+sentence-transformers
+requests
+pytz
 gdown
