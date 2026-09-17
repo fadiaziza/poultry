@@ -1,11 +1,33 @@
 import os
 import glob
+import zipfile
+import gdown
 import fitz  # PyMuPDF
 from PIL import Image
 import streamlit as st
 
 # ضبط إعدادات الصفحة
 st.set_page_config(page_title="منصة الدعم الفني الهندسي", layout="wide")
+
+# -------------------------------------------------------------
+# 1. تنزيل وفك ضغط ملف manuals.zip من Google Drive تلقائياً
+# -------------------------------------------------------------
+FILE_ID = "1IyoK2zvFm9_Wt98_J9TcLO4BoOXBP-FE"
+ZIP_NAME = "manuals.zip"
+FLAG_FILE = ".manuals_downloaded"
+
+if not os.path.exists(FLAG_FILE):
+    try:
+        url = f"https://drive.google.com/uc?id={FILE_ID}"
+        gdown.download(url, ZIP_NAME, quiet=False)
+        if os.path.exists(ZIP_NAME):
+            with zipfile.ZipFile(ZIP_NAME, 'r') as zip_ref:
+                zip_ref.extractall(".")
+            os.remove(ZIP_NAME)
+            with open(FLAG_FILE, "w") as f:
+                f.write("done")
+    except Exception as e:
+        print(f"Error downloading manuals: {e}")
 
 # عرض الشعار إن وُجد
 if os.path.exists("logo.png"):
@@ -15,11 +37,10 @@ st.title("🛠️ منصة الدعم الفني الهندسي ومطابقة �
 st.markdown("فحص القطع ومطابقتها الآلية مع كتالوجات الصيانة المعتمدة لخطوط المسلخ.")
 
 # -------------------------------------------------------------
-# 1. فهرسة سريعة وخفيفة جداً للكتالوجات (في الذاكرة المؤقتة)
+# 2. فهرسة خفيفة وسريعة للنصوص وأرقام القطع
 # -------------------------------------------------------------
-@st.cache_resource(show_spinner="جاري تجهيز فهرس الكتالوجات الهندسية...")
+@st.cache_resource(show_spinner="جاري قراءة وفهرسة كافة كتالوجات Meyn...")
 def build_lightweight_index():
-    """فهرسة النصوص وأرقام القطع فقط بدون استهلاك الـ RAM"""
     pdf_files = glob.glob("*.pdf") + glob.glob("**/*.pdf", recursive=True)
     catalog_data = []
 
@@ -39,17 +60,16 @@ def build_lightweight_index():
                     })
             doc.close()
         except Exception as e:
-            print(f"تخطي الملف {pdf_path}: {e}")
+            continue
 
     return catalog_data
 
 catalog_index = build_lightweight_index()
 
 # -------------------------------------------------------------
-# 2. دالة استخراج صورة الصفحة عند الطلب فقط (توفير الذاكرة)
+# 3. دالة استخراج صورة الصفحة عند الطلب
 # -------------------------------------------------------------
 def get_page_snapshot(pdf_path, page_num):
-    """تحويل صفحة معينة فقط لصورة عند الحاجة"""
     try:
         doc = fitz.open(pdf_path)
         page = doc[page_num]
@@ -62,7 +82,7 @@ def get_page_snapshot(pdf_path, page_num):
         return None
 
 # -------------------------------------------------------------
-# 3. واجهة الاستخدام
+# 4. واجهة الاستخدام
 # -------------------------------------------------------------
 col1, col2 = st.columns([1, 1])
 
@@ -73,7 +93,7 @@ with col1:
     if uploaded_file:
         st.image(uploaded_file, caption="صورة القطعة المرفوعة", width=250)
 
-    part_query = st.text_input("📝 أدخل رقم القطعة أو اسمها (مثال: 0409.003 أو Bearing):")
+    part_query = st.text_input("📝 أدخل رقم القطعة أو اسمها (مثال: 0409.003 أو AA04):")
     search_button = st.button("🚀 فحص ومطابقة بالكتالوجات", type="primary", use_container_width=True)
 
 with col2:
@@ -86,29 +106,23 @@ with col2:
             st.warning("⚠️ الرجاء كتابة رقم القطعة أو رمزها للبدء بعملية الفحص.")
         else:
             with st.spinner("جاري فحص الكتالوجات واستخراج المخطط..."):
-                matches = []
-                for item in catalog_index:
-                    if query_cleaned in item["text"]:
-                        matches.append(item)
+                matches = [item for item in catalog_index if query_cleaned in item["text"]]
 
                 if matches:
                     st.success(f"✅ تم العثور على {len(matches)} مطابقة في سجلات الصيانة!")
                     
-                    # عرض أول وأدق نتيجة مطابقة
                     top_match = matches[0]
                     st.markdown(f"**🏭 اسم الماكينة:** `{top_match['machine']}`")
                     st.markdown(f"**📄 رقم الصفحة في الكتالوج:** `الصفحة {top_match['page_num'] + 1}`")
                     st.markdown(f"**📁 اسم الملف:** `{os.path.basename(top_match['file_path'])}`")
 
-                    # استخراج صورة الصفحة المحددة فوراً
                     page_img = get_page_snapshot(top_match["file_path"], top_match["page_num"])
                     if page_img:
                         st.image(page_img, caption=f"المخطط الهندسي - {top_match['machine']} (صفحة {top_match['page_num'] + 1})", use_container_width=True)
                     
-                    # إذا وُجدت صفحات أخرى بها نفس الرقم
                     if len(matches) > 1:
-                        st.info("ℹ️ توجد مطابقة في صفحات أو ماكينات أخرى:")
-                        for other in matches[1:4]:
+                        st.info("ℹ️ توجد مطابقات أخرى في الكتالوجات:")
+                        for other in matches[1:5]:
                             st.write(f"- ماكينة: **{other['machine']}** (صفحة {other['page_num'] + 1})")
                 else:
                     st.error(f"❌ لم يتم العثور على تطابق للرمز: `{part_query}` في الكتالوجات المتوفرة.")
