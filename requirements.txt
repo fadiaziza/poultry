@@ -1,8 +1,7 @@
-streamlit
+gradio
 pymupdf
 pillow
-torch
+torch --extra-index-url https://download.pytorch.org/whl/cpu
 sentence-transformers
 requests
 pytz
-gdown
