@@ -39,15 +39,41 @@ SYSTEM_LOGS = "بدء تشغيل النظام والاتصال بالسيرفر.
 is_syncing = False
 
 def get_visual_model():
-    """تحميل نموذج CLIP عند أول استخدام فقط لتوفير الذاكرة"""
     global visual_model
     if visual_model is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
         visual_model = SentenceTransformer('clip-ViT-B-32', device=device)
     return visual_model
 
+def build_visual_database_now():
+    """بناء وتحديث فهرس الصور فورا"""
+    global IMAGE_INDEX, IMAGE_PATHS, SYSTEM_LOGS
+    valid_exts = ("*.png", "*.jpg", "*.jpeg", "*.webp", "*.PNG", "*.JPG", "*.JPEG")
+    all_imgs = []
+    for ext in valid_exts:
+        all_imgs.extend(glob.glob(os.path.join(LOCAL_DIR, "**", ext), recursive=True))
+
+    target_imgs = [p for p in set(all_imgs) if "logo" not in os.path.basename(p).lower()]
+    if not target_imgs:
+        return
+
+    model = get_visual_model()
+    embeddings = []
+    paths = []
+    for p in target_imgs:
+        try:
+            img = Image.open(p).convert('RGB')
+            embeddings.append(model.encode(img, convert_to_tensor=True))
+            paths.append(p)
+        except Exception:
+            continue
+
+    if embeddings:
+        IMAGE_INDEX = torch.stack(embeddings)
+        IMAGE_PATHS = paths
+        print(f"✅ تم تجهيز الفهرس البصري لـ {len(IMAGE_PATHS)} صورة.", flush=True)
+
 def sync_drive_worker():
-    """تحميل متسلسل للملفات والصور مع حماية من تعليق الشبكة ومعالجة أسماء Linux"""
     global SYSTEM_LOGS, IMAGE_INDEX, IMAGE_PATHS, is_syncing
     is_syncing = True
     SYSTEM_LOGS = "جاري الاتصال بـ Google Drive..."
@@ -57,13 +83,12 @@ def sync_drive_worker():
         credentials, _ = google.auth.default(scopes=['https://www.googleapis.com/auth/drive.readonly'])
         drive_service = build('drive', 'v3', credentials=credentials, cache_discovery=False)
 
-        # البحث عن المجلد الأساسي
         query = f"name = '{FOLDER_NAME}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
         res = drive_service.files().list(q=query, fields="files(id, name)").execute()
         folders = res.get('files', [])
 
         if not folders:
-            query_shared = f"mimeType = 'application/vnd.google-apps.folder' and trashed = false and sharedWithMe = true"
+            query_shared = "mimeType = 'application/vnd.google-apps.folder' and trashed = false and sharedWithMe = true"
             res_shared = drive_service.files().list(q=query_shared, fields="files(id, name)").execute()
             folders = [f for f in res_shared.get('files', []) if f['name'] == FOLDER_NAME]
 
@@ -74,73 +99,74 @@ def sync_drive_worker():
             return
 
         folder_id = folders[0]['id']
-        SYSTEM_LOGS = "تم الاتصال بالمجلد، جاري مسح وتحميل الكتالوجات والصور..."
+        SYSTEM_LOGS = "تم العثور على المجلد، جاري مسح القوائم وتنزيل الصور أولاً..."
         print(SYSTEM_LOGS, flush=True)
 
-        def download_folder_contents(parent_id, target_dir):
-            os.makedirs(target_dir, exist_ok=True)
+        image_items = []
+        pdf_items = []
+
+        # مسح الشجرة وتصنيف الملفات
+        def scan_tree(parent_id, current_local_dir):
+            os.makedirs(current_local_dir, exist_ok=True)
             page_token = None
             while True:
-                response = drive_service.files().list(
+                resp = drive_service.files().list(
                     q=f"'{parent_id}' in parents and trashed = false",
                     fields="nextPageToken, files(id, name, mimeType)",
                     pageSize=100,
                     pageToken=page_token
                 ).execute()
 
-                for item in response.get('files', []):
-                    mtype = item['mimeType']
-                    # تنظيف الاسم من الشرطات المائلة والرموز غير المسموحة بنظام Linux
-                    clean_name = re.sub(r'[\\/*?:"<>|]', '_', item['name'])
-                    local_path = os.path.join(target_dir, clean_name)
+                for it in resp.get('files', []):
+                    c_name = re.sub(r'[\\/*?:"<>|]', '_', it['name'])
+                    dest = os.path.join(current_local_dir, c_name)
+                    if it['mimeType'] == 'application/vnd.google-apps.folder':
+                        scan_tree(it['id'], dest)
+                    else:
+                        low = c_name.lower()
+                        if low.endswith(('.png', '.jpg', '.jpeg', '.webp')):
+                            image_items.append((it['id'], dest, c_name))
+                        elif low.endswith('.pdf'):
+                            pdf_items.append((it['id'], dest, c_name))
 
-                    if mtype == 'application/vnd.google-apps.folder':
-                        download_folder_contents(item['id'], local_path)
-                    elif any(clean_name.lower().endswith(ext) for ext in ['.pdf', '.png', '.jpg', '.jpeg', '.webp']):
-                        if not os.path.exists(local_path):
-                            try:
-                                req = drive_service.files().get_media(fileId=item['id'])
-                                with open(local_path, "wb") as f:
-                                    downloader = MediaIoBaseDownload(f, req, chunksize=2*1024*1024)
-                                    done = False
-                                    while not done:
-                                        status, done = downloader.next_chunk()
-                                print(f"✅ تم تحميل: {clean_name}", flush=True)
-                            except Exception as dl_err:
-                                print(f"⚠️ تعذر تحميل {clean_name}: {dl_err}", flush=True)
-
-                page_token = response.get('nextPageToken', None)
+                page_token = resp.get('nextPageToken', None)
                 if not page_token:
                     break
 
-        download_folder_contents(folder_id, LOCAL_DIR)
+        scan_tree(folder_id, LOCAL_DIR)
 
-        # فحص الصور المستخرجة وتجهيز الفهرس البصري
-        valid_exts = ("*.png", "*.jpg", "*.jpeg", "*.webp", "*.PNG", "*.JPG", "*.JPEG")
-        all_imgs = []
-        for ext in valid_exts:
-            all_imgs.extend(glob.glob(os.path.join(LOCAL_DIR, "**", ext), recursive=True))
-
-        target_imgs = [p for p in set(all_imgs) if "logo" not in os.path.basename(p).lower()]
-        all_pdfs = glob.glob(os.path.join(LOCAL_DIR, "**", "*.pdf"), recursive=True)
-
-        if target_imgs:
-            SYSTEM_LOGS = f"جاري توليد بصمات CLIP لـ {len(target_imgs)} صورة..."
-            print(SYSTEM_LOGS, flush=True)
-            model = get_visual_model()
-            embeddings = []
-            paths = []
-            for p in target_imgs:
+        # 1. تنزيل الصور وبناء الفهرس البصري فوراً
+        for f_id, dest, c_name in image_items:
+            if not os.path.exists(dest):
                 try:
-                    img = Image.open(p).convert('RGB')
-                    embeddings.append(model.encode(img, convert_to_tensor=True))
-                    paths.append(p)
+                    req = drive_service.files().get_media(fileId=f_id)
+                    with open(dest, "wb") as f:
+                        downloader = MediaIoBaseDownload(f, req, chunksize=1024*1024)
+                        done = False
+                        while not done:
+                            _, done = downloader.next_chunk()
                 except Exception:
                     continue
-            if embeddings:
-                IMAGE_INDEX = torch.stack(embeddings)
-                IMAGE_PATHS = paths
 
+        build_visual_database_now()
+        SYSTEM_LOGS = f"✅ الصور جاهزة ({len(IMAGE_PATHS)} صورة). جاري استكمال تحميل الكتالوجات..."
+        print(SYSTEM_LOGS, flush=True)
+
+        # 2. تنزيل ملفات الـ PDF
+        for f_id, dest, c_name in pdf_items:
+            if not os.path.exists(dest):
+                try:
+                    req = drive_service.files().get_media(fileId=f_id)
+                    with open(dest, "wb") as f:
+                        downloader = MediaIoBaseDownload(f, req, chunksize=2*1024*1024)
+                        done = False
+                        while not done:
+                            _, done = downloader.next_chunk()
+                    print(f"تم تحميل كتالوج: {c_name}", flush=True)
+                except Exception:
+                    continue
+
+        all_pdfs = glob.glob(os.path.join(LOCAL_DIR, "**", "*.pdf"), recursive=True)
         SYSTEM_LOGS = f"✅ اكتملت المزامنة بنجاح! المفهرس: {len(all_pdfs)} كتالوج PDF و {len(IMAGE_PATHS)} صورة قطعة."
         print(SYSTEM_LOGS, flush=True)
 
@@ -150,11 +176,9 @@ def sync_drive_worker():
     finally:
         is_syncing = False
 
-# بدء مسار المزامنة فوراً دون تأخير الخادم
 threading.Thread(target=sync_drive_worker, daemon=True).start()
 
 def get_logo_base64():
-    """استخراج شعار الشركة في حال توفره بالمجلد"""
     for ext in ["logo.png", "logo.jpg", "logo.jpeg"]:
         for p in glob.glob(os.path.join(LOCAL_DIR, "**", ext), recursive=True):
             if os.path.exists(p):
@@ -165,7 +189,6 @@ def get_logo_base64():
     return None
 
 def send_whatsapp_alert(query_text, info_summary):
-    """إشعار واتساب لعمليات البحث"""
     try:
         url = f"https://7107.api.greenapi.com/waInstance{ID_INSTANCE}/sendMessage/{API_TOKEN}"
         local_tz = pytz.timezone("Asia/Gaza")
@@ -189,18 +212,13 @@ def get_clean_machine_name(pdf_path):
     return f"{clean_name} — [`{fname}`]"
 
 def search_part_number_in_all_manuals(raw_input):
-    """البحث المرن عن أرقام القطع والإنذارات داخل الكتالوجات"""
     clean_input = raw_input.strip()
-    
-    # 1. استخراج كود الإنذار/العطل (مثل E002 أو E-02)
-    alarm_match = re.search(r'\b([Ee]\s*[-_]?\s*\d{2,4})\b', clean_input)
-    
-    # 2. استخراج رقم القطعة الميكانيكية
-    core_match = re.search(r'(\d{3,4}\.[\w\d]+\.\d{3}\.\d{2})', clean_input)
+    alarm_match = re.search(r'\b([Ee]\s*[-_]?\s*\d{1,4})\b', clean_input)
+    core_match = re.search(r'(\d{3,4}\.[\w\d]+\.\d{2,3}(?:\.\d{2})?)', clean_input)
     if not core_match:
-        core_match = re.search(r'(\d{3}\.\d{3}\.\d{2})', clean_input)
+        core_match = re.search(r'(\d{3,4}\.\d{3}\.\d{2})', clean_input)
 
-    search_terms = set()
+    search_targets = set()
     detected_key = clean_input
 
     if alarm_match:
@@ -208,35 +226,31 @@ def search_part_number_in_all_manuals(raw_input):
         digits = re.sub(r'[^0-9]', '', raw_code)
         int_val = int(digits) if digits else 0
         detected_key = raw_code
-        search_terms.update([
-            raw_code,
-            f"E-{digits}",
-            f"E {digits}",
-            f"E{int_val}",
-            f"E-{int_val}",
-            f"E0{int_val}",
-            f"E-0{int_val}",
-            f"Error {int_val}",
-            f"Alarm {int_val}",
-            f"Error {digits}",
-            f"Alarm {digits}"
+        search_targets.update([
+            raw_code, f"E-{digits}", f"E {digits}", f"E{int_val}", f"E-{int_val}",
+            f"E0{int_val}", f"E-0{int_val}", f"Error {int_val}", f"Alarm {int_val}",
+            f"Error {digits}", f"Alarm {digits}"
         ])
     elif core_match:
         core_number = core_match.group(1)
         detected_key = core_number
-        search_terms.update([
-            clean_input,
-            core_number,
-            f"D{core_number}",
-            f"C{core_number}",
-            f"H{core_number}",
-            core_number.replace(".", "")
+        search_targets.update([
+            clean_input, core_number, f"D{core_number}", f"C{core_number}",
+            f"H{core_number}", core_number.replace(".", "")
         ])
     else:
-        words = [w for w in re.split(r'[\s,;:_-]+', clean_input) if len(w) >= 3]
-        search_terms.update(words)
+        words = [w for w in re.split(r'[\s,;:_/\-]+', clean_input) if len(w) >= 3]
+        search_targets.update(words)
 
-    valid_targets = [re.escape(t) for t in search_terms if len(t) >= 2]
+    sub_parts = re.findall(r'\d{2,4}', detected_key)
+    if len(sub_parts) >= 3:
+        p1, p2, p3 = sub_parts[-3], sub_parts[-2], sub_parts[-1]
+        search_targets.update([
+            f"{p1}.{p2}.{p3}", f"{p1}{p2}{p3}", f"D{p1}.{p2}.{p3}",
+            f"C{p1}.{p2}.{p3}", f"{p1}.{p2}", f"{p2}.{p3}"
+        ])
+
+    valid_targets = [re.escape(t) for t in search_targets if len(t) >= 2]
     if not valid_targets:
         return clean_input, detected_key, []
 
@@ -264,7 +278,7 @@ def search_part_number_in_all_manuals(raw_input):
                         "page": page_num + 1,
                         "details": " | ".join(snippet) if snippet else "مطابقة مسجلة في الدليل الفني."
                     })
-                    if len(matches) >= 5:
+                    if len([m for m in matches if m['machine_name'] == get_clean_machine_name(pdf_path)]) >= 2:
                         break
             doc.close()
         except Exception:
@@ -273,14 +287,16 @@ def search_part_number_in_all_manuals(raw_input):
     return clean_input, detected_key, matches
 
 def visual_maintenance_copilot(image_file, text_input):
-    global IMAGE_INDEX, IMAGE_PATHS, SYSTEM_LOGS, is_syncing
+    global IMAGE_INDEX, IMAGE_PATHS, SYSTEM_LOGS
 
     status_prefix = f"> 📡 **حالة السيرفر والملفات:** `{SYSTEM_LOGS}`\n\n---\n\n"
 
-    # 1. البحث البصري بالصورة
     if image_file is not None:
         if len(IMAGE_INDEX) == 0:
-            return status_prefix + "⚠️ **قاعدة بيانات الصور غير متوفرة بعد على السيرفر.** يرجى متابعة حالة السيرفر بالأعلى حتى اكتمال التنزيل.", None
+            build_visual_database_now()
+
+        if len(IMAGE_INDEX) == 0:
+            return status_prefix + "⚠️ **قاعدة بيانات الصور قيد التنزيل والمعالجة.** يرجى المحاولة بعد لحظات.", None
 
         model = get_visual_model()
         uploaded_rgb = image_file.convert('RGB')
@@ -291,30 +307,36 @@ def visual_maintenance_copilot(image_file, text_input):
 
         if best_score >= 0.40:
             matched_img_path = IMAGE_PATHS[best_idx]
-            extracted_code = os.path.splitext(os.path.basename(matched_img_path))[0]
-            _, _, manual_matches = search_part_number_in_all_manuals(extracted_code)
+            raw_part_code = os.path.splitext(os.path.basename(matched_img_path))[0]
+
+            num_blocks = re.findall(r'\d{2,4}', raw_part_code)
+            if len(num_blocks) >= 3:
+                refined_query = f"{num_blocks[-3]}.{num_blocks[-2]}.{num_blocks[-1]}"
+            else:
+                refined_query = raw_part_code
+
+            _, _, manual_matches = search_part_number_in_all_manuals(refined_query)
             matched_pil = Image.open(matched_img_path)
             percent = int(best_score * 100)
 
-            send_whatsapp_alert(f"مطابقة بصرية لصورة قطعة ({percent}%)", f"رقم القطعة: {extracted_code}")
+            send_whatsapp_alert(f"مطابقة بصرية لصورة قطعة ({percent}%)", f"رقم القطعة: {refined_query}")
 
             res = status_prefix + f"### 🎯 نتيجة التعرف البصري على القطعة\n\n"
             res += f"* **نسبة التطابق البصري:** `{percent}%`\n"
-            res += f"* **رقم القطعة المستخرج:** `{extracted_code}`\n\n"
+            res += f"* **رقم القطعة:** `{refined_query}` *(الملف: `{raw_part_code}`)*\n\n"
             res += "### 📖 المطابقة في الكتالوجات:\n\n"
 
             if manual_matches:
                 for idx, item in enumerate(manual_matches, 1):
                     res += f"**{idx}. {item['machine_name']}**\n"
                     res += f"* 📄 الصفحة: **{item['page']}**\n"
-                    res += f"* ⚙️ التفاصيل الفنية: `{item['details']}`\n\n"
+                    res += f"* ⚙️ التفاصيل: `{item['details']}`\n\n"
             else:
-                res += "تم التعرف على شكل القطعة ولكن لم يتم العثور على أرقامها في ملفات الكتالوجات المفهرسة حالياً.\n"
+                res += f"تم التعرف على القطعة بنجاح، وجاري استكمال مطابقة رقمها `{refined_query}` في الكتالوجات حال انتهاء تنزيل باقي ملفات PDF.\n"
             return res, matched_pil
         else:
-            return status_prefix + f"⚠️ لم يتم العثور على تطابق كافٍ (نسبة الثقة: {int(best_score * 100)}%). يرجى تصوير القطعة بوضوح أو إدخال كودها.", None
+            return status_prefix + f"⚠️ لم يتم العثور على تطابق كافٍ (نسبة الثقة: {int(best_score * 100)}%).", None
 
-    # 2. البحث النصي / أكواد الإنذار
     user_text = (text_input or "").strip()
     if user_text:
         full_input, detected_key, found_records = search_part_number_in_all_manuals(user_text)
@@ -324,10 +346,15 @@ def visual_maintenance_copilot(image_file, text_input):
         full_clean = re.sub(r'[^a-zA-Z0-9]', '', full_input).lower()
 
         for p in IMAGE_PATHS:
-            fname_clean = re.sub(r'[^a-zA-Z0-9]', '', os.path.splitext(os.path.basename(p))[0]).lower()
-            if (clean_key and (clean_key in fname_clean or fname_clean in clean_key)) or (len(fname_clean) >= 4 and fname_clean in full_clean):
-                found_img = Image.open(p)
-                break
+            fname = os.path.splitext(os.path.basename(p))[0].lower()
+            fname_clean = re.sub(r'[^a-zA-Z0-9]', '', fname)
+            if (clean_key and (clean_key in fname_clean or fname_clean in clean_key)) or \
+               (len(fname_clean) >= 4 and fname_clean in full_clean):
+                try:
+                    found_img = Image.open(p)
+                    break
+                except Exception:
+                    continue
 
         summary_info = f"تم إيجاد {len(found_records)} كتالوج مطابق" if found_records else "لا يوجد تطابق"
         send_whatsapp_alert(user_text, summary_info)
@@ -340,12 +367,12 @@ def visual_maintenance_copilot(image_file, text_input):
                 res += f"* ⚙️ التفاصيل الفنية والحلول: `{item['details']}`\n\n"
             return res, found_img
         else:
-            return status_prefix + f"⚠️ لم يتم العثور على تطابق في الكتالوجات للرمز/الرقم `{detected_key}`.\nتأكد من كتابة كود الإنذار بدقة (مثل E002 أو E-02) أو رقم القطعة.", None
+            return status_prefix + f"⚠️ لم يتم العثور على تطابق في الكتالوجات للرمز/الرقم `{detected_key}`.", None
 
     return status_prefix + "يرجى التقاط صورة للقطعة أو كتابة رقمها/كود الإنذار للبدء.", None
 
 # ==========================================
-# 2. واجهة التطبيق
+# 2. الواجهة الرسومية
 # ==========================================
 logo_data_url = get_logo_base64()
 logo_html = f'<img src="{logo_data_url}" style="height: 75px; margin-left: 20px; border-radius: 8px; vertical-align: middle;">' if logo_data_url else ''
