@@ -1,6 +1,7 @@
 import os
 import glob
 import re
+import io
 import base64
 import fitz  # PyMuPDF
 import requests
@@ -11,50 +12,88 @@ import torch
 from sentence_transformers import SentenceTransformer, util
 import gradio as gr
 
-# ==========================================
-# 1. إعدادات النظام وبيئة Google Cloud Run
-# ==========================================
+# مكتبات الاتصال بـ Google Drive
+import google.auth
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseDownload
+
 PORT = int(os.environ.get("PORT", 8080))
 
+# ==========================================
+# 1. إعدادات النظام وبيئة Google Cloud
+# ==========================================
 ID_INSTANCE = "710722737613"
 API_TOKEN = "8902219901b2411cb1ebfa944bbfc3d7d499d671111c4fe18e"
 MY_PHONE = "970599431267"
 
-# تحديد مسار المجلدات بمرونة (إذا وجد مسار كولاب أو مسار محلي في السيرفر)
-DEFAULT_LOCAL_PATH = "Maintenance_Manuals"
-if os.path.exists("/content/drive/MyDrive/Maintenance_Manuals"):
-    DRIVE_FOLDER_PATH = "/content/drive/MyDrive/Maintenance_Manuals"
-elif os.path.exists(DEFAULT_LOCAL_PATH):
-    DRIVE_FOLDER_PATH = DEFAULT_LOCAL_PATH
-else:
-    DRIVE_FOLDER_PATH = "."
+LOCAL_DIR = "/tmp/Maintenance_Manuals"
+REAL_IMAGES_PATH = os.path.join(LOCAL_DIR, "Real_Parts_Images")
+os.makedirs(LOCAL_DIR, exist_ok=True)
+os.makedirs(REAL_IMAGES_PATH, exist_ok=True)
 
-REAL_IMAGES_PATH = os.path.join(DRIVE_FOLDER_PATH, "Real_Parts_Images")
+FOLDER_NAME = "Maintenance_Manuals"
 
-# تحميل نموذج الرؤية البصرية خفيف الوزن وعالي الدقة للتشابه البصري
+def download_drive_folder():
+    """تحميل الملفات تلقائياً من Google Drive عند الإقلاع"""
+    try:
+        credentials, _ = google.auth.default(scopes=['https://www.googleapis.com/auth/drive.readonly'])
+        drive_service = build('drive', 'v3', credentials=credentials)
+
+        query = f"name = '{FOLDER_NAME}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
+        res = drive_service.files().list(q=query, fields="files(id, name)").execute()
+        folders = res.get('files', [])
+        if not folders:
+            print("لم يتم العثور على المجلد في Google Drive")
+            return
+
+        folder_id = folders[0]['id']
+
+        def fetch_files_recursive(parent_id, target_local_path):
+            os.makedirs(target_local_path, exist_ok=True)
+            f_res = drive_service.files().list(
+                q=f"'{parent_id}' in parents and trashed = false",
+                fields="files(id, name, mimeType)"
+            ).execute()
+            items = f_res.get('files', [])
+            for item in items:
+                if item['mimeType'] == 'application/vnd.google-apps.folder':
+                    sub_dir = os.path.join(target_local_path, item['name'])
+                    fetch_files_recursive(item['id'], sub_dir)
+                else:
+                    file_path = os.path.join(target_local_path, item['name'])
+                    if not os.path.exists(file_path):
+                        req = drive_service.files().get_media(fileId=item['id'])
+                        with open(file_path, "wb") as fh:
+                            downloader = MediaIoBaseDownload(fh, req)
+                            done = False
+                            while not done:
+                                _, done = downloader.next_chunk()
+
+        fetch_files_recursive(folder_id, LOCAL_DIR)
+        print("تمت مزامنة الملفات من Google Drive بنجاح")
+    except Exception as e:
+        print(f"خطأ أثناء مزامنة Google Drive: {e}")
+
+# تنزيل الملفات من الدرايف
+download_drive_folder()
+
+# تحميل النموذج
 device = "cuda" if torch.cuda.is_available() else "cpu"
 visual_model = SentenceTransformer('clip-ViT-B-32', device=device)
 
-# فهرس بصري لتخزين متجهات صور المستودع
 IMAGE_INDEX = []
 IMAGE_PATHS = []
 
 def build_visual_database():
-    """بناء بصمات رقمية لجميع صور القطع المحفوظة"""
     global IMAGE_INDEX, IMAGE_PATHS
     IMAGE_INDEX = []
     IMAGE_PATHS = []
 
     valid_exts = ("*.png", "*.jpg", "*.jpeg", "*.webp")
     all_imgs = []
-
-    # البحث داخل مجلد الصور أو المستودع كاملاً
-    target_img_dir = REAL_IMAGES_PATH if os.path.exists(REAL_IMAGES_PATH) else DRIVE_FOLDER_PATH
     for ext in valid_exts:
-        all_imgs.extend(glob.glob(os.path.join(target_img_dir, "**", ext), recursive=True))
-        all_imgs.extend(glob.glob(os.path.join(target_img_dir, ext)))
+        all_imgs.extend(glob.glob(os.path.join(LOCAL_DIR, "**", ext), recursive=True))
 
-    # استبعاد الشعار من مقارنة قطع الغيار
     all_imgs = [p for p in set(all_imgs) if "logo" not in os.path.basename(p).lower()]
 
     for path in all_imgs:
@@ -68,18 +107,17 @@ def build_visual_database():
 
     if IMAGE_INDEX:
         IMAGE_INDEX = torch.stack(IMAGE_INDEX)
-        print(f"✅ تمت فهرسة {len(IMAGE_PATHS)} صورة قطعة غيار بنجاح")
 
 build_visual_database()
 
 def get_logo_base64():
     for ext in ["logo.png", "logo.jpg", "logo.jpeg"]:
-        p = os.path.join(DRIVE_FOLDER_PATH, ext)
-        if os.path.exists(p):
-            with open(p, "rb") as img_file:
-                b64 = base64.b64encode(img_file.read()).decode("utf-8")
-                mime = "image/png" if ext.endswith("png") else "image/jpeg"
-                return f"data:{mime};base64,{b64}"
+        for p in glob.glob(os.path.join(LOCAL_DIR, "**", ext), recursive=True):
+            if os.path.exists(p):
+                with open(p, "rb") as img_file:
+                    b64 = base64.b64encode(img_file.read()).decode("utf-8")
+                    mime = "image/png" if ext.endswith("png") else "image/jpeg"
+                    return f"data:{mime};base64,{b64}"
     return None
 
 def send_whatsapp_alert(query_text, info_summary):
@@ -98,24 +136,19 @@ def send_whatsapp_alert(query_text, info_summary):
         }
         requests.post(url, json=payload, headers={'Content-Type': 'application/json'}, timeout=4)
     except Exception as e:
-        print(f"⚠️ تعذر إرسال الواتساب: {e}")
+        print(f"WhatsApp Error: {e}")
 
 def get_clean_machine_name(pdf_path):
     fname = os.path.basename(pdf_path)
     clean_name = fname.replace(".pdf", "").replace("pdf.", "").replace("-1", "").strip()
     return f"{clean_name} — [`{fname}`]"
 
-# ==========================================
-# 2. مطابقة الصورة بصرياً مع المستودع
-# ==========================================
 def find_part_by_image(uploaded_image):
-    """مقارنة صورة الفني بصور الأرشيف واستخراج اسم الصورة الأقرب"""
     if len(IMAGE_INDEX) == 0:
         return None, 0.0
 
     uploaded_rgb = uploaded_image.convert('RGB')
     query_emb = visual_model.encode(uploaded_rgb, convert_to_tensor=True)
-
     cos_scores = util.cos_sim(query_emb, IMAGE_INDEX)[0]
     best_idx = torch.argmax(cos_scores).item()
     best_score = float(cos_scores[best_idx])
@@ -124,9 +157,6 @@ def find_part_by_image(uploaded_image):
         return IMAGE_PATHS[best_idx], best_score
     return None, best_score
 
-# ==========================================
-# 3. محرك البحث عن رقم القطعة في الكتالوجات
-# ==========================================
 def search_part_number_in_all_manuals(raw_input):
     clean_input = raw_input.strip()
     core_match = re.search(r'(\d{3}\.\d{3}\.\d{2})', clean_input)
@@ -136,10 +166,7 @@ def search_part_number_in_all_manuals(raw_input):
     valid_targets = [re.escape(t) for t in search_targets if len(t) >= 4]
     search_regex = re.compile("|".join(valid_targets), re.IGNORECASE)
 
-    all_pdfs = glob.glob(f"{DRIVE_FOLDER_PATH}/**/*.pdf", recursive=True)
-    if not all_pdfs:
-        all_pdfs = glob.glob(f"{DRIVE_FOLDER_PATH}/*.pdf")
-    
+    all_pdfs = glob.glob(f"{LOCAL_DIR}/**/*.pdf", recursive=True)
     matches = []
 
     for pdf_path in all_pdfs:
@@ -167,31 +194,24 @@ def search_part_number_in_all_manuals(raw_input):
             continue
     return clean_input, core_number, matches
 
-# ==========================================
-# 4. المعالج المركزي للبحث النصي والصوري
-# ==========================================
 def visual_maintenance_copilot(image_file, text_input):
     user_text = (text_input or "").strip()
 
-    # أ. فحص الصورة
     if image_file is not None:
         matched_img_path, similarity_score = find_part_by_image(image_file)
-
         if matched_img_path:
             img_filename = os.path.basename(matched_img_path)
             extracted_code = os.path.splitext(img_filename)[0]
 
             clean_input, core_num, manual_matches = search_part_number_in_all_manuals(extracted_code)
             matched_pil = Image.open(matched_img_path)
-
             percent = int(similarity_score * 100)
             send_whatsapp_alert(f"مطابقة بصرية لصورة قطعة ({percent}%)", f"رقم القطعة: {extracted_code}")
 
             res = f"### 🎯 نتيجة التعرف البصري على القطعة\n\n"
             res += f"* **نسبة التطابق البصري:** `{percent}%`\n"
             res += f"* **رقم القطعة المعتمد:** `{extracted_code}`\n\n"
-            res += "--- \n"
-            res += "### 📖 بيانات الكتالوجات والماكينات المشتركة:\n\n"
+            res += "--- \n### 📖 بيانات الكتالوجات والماكينات المشتركة:\n\n"
 
             if manual_matches:
                 for idx, item in enumerate(manual_matches, 1):
@@ -199,24 +219,20 @@ def visual_maintenance_copilot(image_file, text_input):
                     res += f"* 📄 **الصفحة داخل الدليل:** صفحة **{item['page']}**\n"
                     res += f"* ⚙️ **البيانات والمواصفات:** `{item['details']}`\n\n"
             else:
-                res += "تم التعرف على شكل القطعة، ولكن لم يتم العثور على أرقامها بوضوح في ملفات الـ PDF المرفوعة حالياً.\n"
-
+                res += "تم التعرف على القطعة، ولكن لم يتم العثور على أرقامها في ملفات PDF المتاحة.\n"
             return res, matched_pil
         else:
             return (
-                f"⚠️ لم يتم العثور على تطابق كافٍ لشكل هذه القطعة في أرشيف الصور المحفوظة (نسبة الثقة: {int(similarity_score * 100)}%).\n"
-                "يرجى تصوير القطعة بزاوية أوضح أو إدخال أي رقم مطبوع عليها في خانة البحث النصي.",
+                f"⚠️ لم يتم العثور على تطابق كافٍ لشكل هذه القطعة (نسبة الثقة: {int(similarity_score * 100)}%).\n"
+                "يرجى تصوير القطعة بزاوية أوضح أو إدخال رقمها نصياً.",
                 None
             )
 
-    # ب. فحص المدخل النصي
     if user_text:
         full_input_code, core_num, found_records = search_part_number_in_all_manuals(user_text)
-
         found_img = None
-        target_dir = REAL_IMAGES_PATH if os.path.exists(REAL_IMAGES_PATH) else DRIVE_FOLDER_PATH
         for ext in ("*.png", "*.jpg", "*.jpeg", "*.webp"):
-            for p in glob.glob(os.path.join(target_dir, "**", ext), recursive=True):
+            for p in glob.glob(os.path.join(LOCAL_DIR, "**", ext), recursive=True):
                 if core_num.lower() in os.path.basename(p).lower():
                     found_img = Image.open(p)
                     break
@@ -239,7 +255,7 @@ def visual_maintenance_copilot(image_file, text_input):
     return "يرجى التقاط صورة للقطعة أو إدخال رقمها في خانة البحث.", None
 
 # ==========================================
-# 5. الواجهة الرسومية الرسمية
+# 2. الواجهة الرسومية الرسمية
 # ==========================================
 logo_data_url = get_logo_base64()
 logo_html = f'<img src="{logo_data_url}" style="height: 75px; margin-left: 20px; border-radius: 8px; vertical-align: middle;">' if logo_data_url else ''
@@ -264,7 +280,6 @@ footer_markdown = """
 
 with gr.Blocks(title="منصة الدعم الهندسي - التعرف البصري على القطع") as demo:
     gr.HTML(header_markdown)
-
     gr.Markdown("""
     * **فحص القطعة بالصورة:** التقط صورة واضحة للقطعة الميكانيكية (أو ارفعها من الهاتف)، وسيتعرف النظام على شكلها، يستخرج رقمها المصنعي، ويحدد كافة الماكينات المشتركة ورقم الصفحة.
     * **البحث النصي البديل:** يمكنك أيضاً كتابة رقم القطعة مباشرة إذا كان متوفراً لديك.
@@ -289,8 +304,4 @@ with gr.Blocks(title="منصة الدعم الهندسي - التعرف البص
     gr.HTML(footer_markdown)
 
 if __name__ == "__main__":
-    # تشغيل متوافق 100% مع Google Cloud Run على المنفذ المطلوب
-    demo.launch(
-        server_name="0.0.0.0",
-        server_port=PORT
-    )
+    demo.launch(server_name="0.0.0.0", server_port=PORT)
