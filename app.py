@@ -34,7 +34,7 @@ os.makedirs(REAL_IMAGES_PATH, exist_ok=True)
 FOLDER_NAME = "Maintenance_Manuals"
 
 def download_drive_folder():
-    """تحميل الملفات تلقائياً من Google Drive عند الإقلاع"""
+    """تحميل الملفات والمجلدات الفرعية تلقائياً من Google Drive عند الإقلاع"""
     try:
         credentials, _ = google.auth.default(scopes=['https://www.googleapis.com/auth/drive.readonly'])
         drive_service = build('drive', 'v3', credentials=credentials)
@@ -50,27 +50,34 @@ def download_drive_folder():
 
         def fetch_files_recursive(parent_id, target_local_path):
             os.makedirs(target_local_path, exist_ok=True)
-            f_res = drive_service.files().list(
-                q=f"'{parent_id}' in parents and trashed = false",
-                fields="files(id, name, mimeType)"
-            ).execute()
-            items = f_res.get('files', [])
-            for item in items:
-                if item['mimeType'] == 'application/vnd.google-apps.folder':
-                    sub_dir = os.path.join(target_local_path, item['name'])
-                    fetch_files_recursive(item['id'], sub_dir)
-                else:
-                    file_path = os.path.join(target_local_path, item['name'])
-                    if not os.path.exists(file_path):
-                        req = drive_service.files().get_media(fileId=item['id'])
-                        with open(file_path, "wb") as fh:
-                            downloader = MediaIoBaseDownload(fh, req)
-                            done = False
-                            while not done:
-                                _, done = downloader.next_chunk()
+            page_token = None
+            while True:
+                f_res = drive_service.files().list(
+                    q=f"'{parent_id}' in parents and trashed = false",
+                    fields="nextPageToken, files(id, name, mimeType)",
+                    pageToken=page_token
+                ).execute()
+                items = f_res.get('files', [])
+                for item in items:
+                    if item['mimeType'] == 'application/vnd.google-apps.folder':
+                        sub_dir = os.path.join(target_local_path, item['name'])
+                        fetch_files_recursive(item['id'], sub_dir)
+                    else:
+                        file_path = os.path.join(target_local_path, item['name'])
+                        os.makedirs(os.path.dirname(file_path), exist_ok=True)
+                        if not os.path.exists(file_path):
+                            req = drive_service.files().get_media(fileId=item['id'])
+                            with open(file_path, "wb") as fh:
+                                downloader = MediaIoBaseDownload(fh, req)
+                                done = False
+                                while not done:
+                                    _, done = downloader.next_chunk()
+                page_token = f_res.get('nextPageToken', None)
+                if not page_token:
+                    break
 
         fetch_files_recursive(folder_id, LOCAL_DIR)
-        print("تمت مزامنة الملفات من Google Drive بنجاح")
+        print("تمت مزامنة جميع الكتالوجات والملفات من Google Drive بنجاح")
     except Exception as e:
         print(f"خطأ أثناء مزامنة Google Drive: {e}")
 
