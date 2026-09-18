@@ -1,9 +1,9 @@
-google-api-python-client
-google-auth
 gradio
 pymupdf
 pillow
-torch --extra-index-url https://download.pytorch.org/whl/cpu
+torch
 sentence-transformers
 requests
 pytz
+google-api-python-client
+google-auth
