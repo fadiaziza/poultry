@@ -82,10 +82,16 @@ def sync_drive_worker():
                     if item['mimeType'] == 'application/vnd.google-apps.folder':
                         download_recursive(item['id'], os.path.join(target_path, item['name']))
                     else:
-                        dest_file = os.path.join(target_path, item['name'])
-                        if not os.path.exists(dest_file):
-                            req = drive_service.files().get_media(fileId=item['id'])
-                            with open(dest_file, "wb") as f:
+                        safe_name = item['name'].replace("/", "-").replace("\\", "-")
+                    dest_file = os.path.join(target_path, safe_name)
+                    os.makedirs(os.path.dirname(dest_file), exist_ok=True)
+                    if not os.path.exists(dest_file):
+                        req = drive_service.files().get_media(fileId=item['id'])
+                        with open(dest_file, "wb") as f:
+                            downloader = MediaIoBaseDownload(f, req)
+                            done = False
+                            while not done:
+                                _, done = downloader.next_chunk()
                                 downloader = MediaIoBaseDownload(f, req)
                                 done = False
                                 while not done:
