@@ -255,11 +255,20 @@ def visual_maintenance_copilot(image_file, text_input):
     if user_text:
         full_input_code, core_num, found_records = search_part_number_in_all_manuals(user_text)
         found_img = None
+        # تنظيف الرقم لمقارنته بأسماء الصور بمرونة (بدون نقاط أو مسافات أو رموز)
+        clean_search_key = re.sub(r'[^a-zA-Z0-9]', '', full_input_code).lower()
+        core_search_key = re.sub(r'[^a-zA-Z0-9]', '', core_num).lower()
+
         for ext in ("*.png", "*.jpg", "*.jpeg", "*.webp"):
             for p in glob.glob(os.path.join(LOCAL_DIR, "**", ext), recursive=True):
-                if core_num.lower() in os.path.basename(p).lower():
-                    found_img = Image.open(p)
-                    break
+                fname = os.path.splitext(os.path.basename(p))[0].lower()
+                clean_fname = re.sub(r'[^a-zA-Z0-9]', '', fname)
+
+                # فحص تطابق اسم الصورة مع الرقم بأي شكل
+                if clean_search_key in clean_fname or clean_fname in clean_search_key or core_search_key in clean_fname:
+                    if "logo" not in clean_fname:
+                        found_img = Image.open(p)
+                        break
             if found_img:
                 break
 
