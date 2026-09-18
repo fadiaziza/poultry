@@ -48,17 +48,19 @@ def get_visual_model():
     return visual_model
 
 def build_visual_database():
-    """فهرسة صور القطع المخزنة للمطابقة البصرية"""
+    """فهرسة صور القطع المخزنة للمطابقة البصرية مع التحقق من امتدادات الصور"""
     global IMAGE_INDEX, IMAGE_PATHS
-    valid_exts = ("*.png", "*.jpg", "*.jpeg", "*.webp")
+    valid_exts = ("*.png", "*.jpg", "*.jpeg", "*.webp", "*.PNG", "*.JPG", "*.JPEG")
     all_imgs = []
     for ext in valid_exts:
         all_imgs.extend(glob.glob(os.path.join(LOCAL_DIR, "**", ext), recursive=True))
 
     all_imgs = [p for p in set(all_imgs) if "logo" not in os.path.basename(p).lower()]
     if not all_imgs:
+        print("⚠️ لم يتم العثور على أي صور داخل مجلد الكتالوجات حتى الآن.")
         return
 
+    print(f"🔄 جاري بناء الفهرس البصري لعدد {len(all_imgs)} صورة...")
     model = get_visual_model()
     temp_index = []
     temp_paths = []
@@ -74,6 +76,7 @@ def build_visual_database():
     if temp_index:
         IMAGE_INDEX = torch.stack(temp_index)
         IMAGE_PATHS = temp_paths
+        print(f"✅ تم بناء الفهرس البصري بنجاح لـ {len(IMAGE_PATHS)} صورة مرجعية.")
 
 def sync_drive_background():
     """تحميل الملفات والمجلدات المتداخلة في مسار منفصل لمنع حظر تشغيل الخادم"""
@@ -128,7 +131,7 @@ def sync_drive_background():
         sync_status = f"خطأ أثناء مزامنة Google Drive: {e}"
         print(sync_status)
 
-# تشغيل المزامنة فوراً في الخلفية
+# تشغيل المزامنة في الخلفية
 threading.Thread(target=sync_drive_background, daemon=True).start()
 
 def get_logo_base64():
@@ -143,7 +146,7 @@ def get_logo_base64():
     return None
 
 def send_whatsapp_alert(query_text, info_summary):
-    """إرسال إشعار فوري لعمليات البحث المهمة"""
+    """إرسال إشعار فوري لعمليات البحث"""
     try:
         url = f"https://7107.api.greenapi.com/waInstance{ID_INSTANCE}/sendMessage/{API_TOKEN}"
         local_tz = pytz.timezone("Asia/Gaza")
@@ -168,6 +171,10 @@ def get_clean_machine_name(pdf_path):
 
 def find_part_by_image(uploaded_image):
     """البحث عن القطعة بمطابقة الملامح البصرية (CLIP)"""
+    global IMAGE_INDEX
+    if len(IMAGE_INDEX) == 0:
+        build_visual_database()
+
     if len(IMAGE_INDEX) == 0:
         return None, 0.0
 
@@ -178,7 +185,7 @@ def find_part_by_image(uploaded_image):
     best_idx = torch.argmax(cos_scores).item()
     best_score = float(cos_scores[best_idx])
 
-    if best_score > 0.65:
+    if best_score >= 0.45:
         return IMAGE_PATHS[best_idx], best_score
     return None, best_score
 
@@ -186,10 +193,10 @@ def search_part_number_in_all_manuals(raw_input):
     """البحث في ملفات الكتالوجات عن أرقام القطع وأكواد الإنذارات والأعطال"""
     clean_input = raw_input.strip()
     
-    # 1. استخراج كود الإنذار/العطل (مثلاً: E002, E-02, Error 02, Alarm 002)
+    # 1. استخراج كود الإنذار/العطل (مثلاً: E002, E-02, Error 02)
     alarm_match = re.search(r'\b([Ee]\s*[-_]?\s*\d{2,4})\b', clean_input)
     
-    # 2. استخراج رقم القطعة الميكانيكية القياسي (مثلاً: 0098.0020.003.03 أو 0000.D409.003.01)
+    # 2. استخراج رقم القطعة القياسي
     core_match = re.search(r'(\d{3,4}\.[\w\d]+\.\d{3}\.\d{2})', clean_input)
     if not core_match:
         core_match = re.search(r'(\d{3}\.\d{3}\.\d{2})', clean_input)
@@ -202,7 +209,6 @@ def search_part_number_in_all_manuals(raw_input):
         digits = re.sub(r'[^0-9]', '', raw_code)
         int_val = int(digits) if digits else 0
         detected_key = raw_code
-        # إضافة كافة صيغ كتابة كود الإنذار في الكتالوجات
         search_terms.update([
             raw_code,
             f"E-{digits}",
@@ -228,7 +234,6 @@ def search_part_number_in_all_manuals(raw_input):
             core_number.replace(".", "")
         ])
     else:
-        # إذا أدخل المستخدم كلمات أو أرقام غير مطابقة للصيغ أعلاه
         words = [w for w in re.split(r'[\s,;:_-]+', clean_input) if len(w) >= 3]
         search_terms.update(words)
 
@@ -277,7 +282,7 @@ def visual_maintenance_copilot(image_file, text_input):
     if not all_pdfs:
         return f"⏳ حالة النظام: {sync_status}\nيرجى الانتظار قليلاً لإتمام مزامنة الملفات من Google Drive والمحاولة مجدداً.", None
 
-    # مسار التعرف البصري بالصورة
+    # مسار التعرف بالصورة
     if image_file is not None:
         matched_img_path, similarity_score = find_part_by_image(image_file)
         if matched_img_path:
@@ -309,12 +314,11 @@ def visual_maintenance_copilot(image_file, text_input):
                 None
             )
 
-    # مسار البحث النصي (أرقام قطع أو أكواد أعطال وإنذارات)
+    # مسار البحث النصي
     if user_text:
         full_input_code, detected_key, found_records = search_part_number_in_all_manuals(user_text)
         found_img = None
         
-        # البحث المرن عن صورة القطعة المطابقة
         clean_search_key = re.sub(r'[^a-zA-Z0-9]', '', detected_key).lower()
         full_clean_input = re.sub(r'[^a-zA-Z0-9]', '', full_input_code).lower()
 
@@ -352,7 +356,7 @@ def visual_maintenance_copilot(image_file, text_input):
     return "يرجى التقاط صورة للقطعة أو إدخال رقمها/كود الإنذار في خانة البحث.", None
 
 # ==========================================
-# 2. الواجهة الرسومية الرسمية
+# 2. الواجهة الرسومية
 # ==========================================
 logo_data_url = get_logo_base64()
 logo_html = f'<img src="{logo_data_url}" style="height: 75px; margin-left: 20px; border-radius: 8px; vertical-align: middle;">' if logo_data_url else ''
