@@ -3,6 +3,8 @@ import glob
 import re
 import io
 import base64
+import threading
+import time
 import fitz  # PyMuPDF
 import requests
 from datetime import datetime
@@ -12,7 +14,6 @@ import torch
 from sentence_transformers import SentenceTransformer, util
 import gradio as gr
 
-# مكتبات الاتصال بـ Google Drive
 import google.auth
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
@@ -33,8 +34,48 @@ os.makedirs(REAL_IMAGES_PATH, exist_ok=True)
 
 FOLDER_NAME = "Maintenance_Manuals"
 
-def download_drive_folder():
-    """تحميل الملفات والمجلدات الفرعية تلقائياً من Google Drive عند الإقلاع"""
+visual_model = None
+IMAGE_INDEX = []
+IMAGE_PATHS = []
+sync_status = "جاري مزامنة الكتالوجات من Google Drive في الخلفية..."
+
+def get_visual_model():
+    global visual_model
+    if visual_model is None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        visual_model = SentenceTransformer('clip-ViT-B-32', device=device)
+    return visual_model
+
+def build_visual_database():
+    global IMAGE_INDEX, IMAGE_PATHS
+    valid_exts = ("*.png", "*.jpg", "*.jpeg", "*.webp")
+    all_imgs = []
+    for ext in valid_exts:
+        all_imgs.extend(glob.glob(os.path.join(LOCAL_DIR, "**", ext), recursive=True))
+
+    all_imgs = [p for p in set(all_imgs) if "logo" not in os.path.basename(p).lower()]
+    if not all_imgs:
+        return
+
+    model = get_visual_model()
+    temp_index = []
+    temp_paths = []
+    for path in all_imgs:
+        try:
+            img = Image.open(path).convert('RGB')
+            embedding = model.encode(img, convert_to_tensor=True)
+            temp_index.append(embedding)
+            temp_paths.append(path)
+        except Exception:
+            continue
+
+    if temp_index:
+        IMAGE_INDEX = torch.stack(temp_index)
+        IMAGE_PATHS = temp_paths
+
+def sync_drive_background():
+    """تحميل الملفات والمجلدات في مسار منفصل لتجنب تأخير فتح المنفذ"""
+    global sync_status
     try:
         credentials, _ = google.auth.default(scopes=['https://www.googleapis.com/auth/drive.readonly'])
         drive_service = build('drive', 'v3', credentials=credentials)
@@ -43,7 +84,8 @@ def download_drive_folder():
         res = drive_service.files().list(q=query, fields="files(id, name)").execute()
         folders = res.get('files', [])
         if not folders:
-            print("لم يتم العثور على المجلد في Google Drive")
+            sync_status = "لم يتم العثور على مجلد Maintenance_Manuals في Google Drive"
+            print(sync_status)
             return
 
         folder_id = folders[0]['id']
@@ -77,45 +119,15 @@ def download_drive_folder():
                     break
 
         fetch_files_recursive(folder_id, LOCAL_DIR)
-        print("تمت مزامنة جميع الكتالوجات والملفات من Google Drive بنجاح")
+        build_visual_database()
+        sync_status = "تمت مزامنة جميع الكتالوجات بنجاح والمنصة جاهزة للبحث بالكامل."
+        print(sync_status)
     except Exception as e:
-        print(f"خطأ أثناء مزامنة Google Drive: {e}")
+        sync_status = f"خطأ أثناء مزامنة Google Drive: {e}"
+        print(sync_status)
 
-# تنزيل الملفات من الدرايف
-download_drive_folder()
-
-# تحميل النموذج
-device = "cuda" if torch.cuda.is_available() else "cpu"
-visual_model = SentenceTransformer('clip-ViT-B-32', device=device)
-
-IMAGE_INDEX = []
-IMAGE_PATHS = []
-
-def build_visual_database():
-    global IMAGE_INDEX, IMAGE_PATHS
-    IMAGE_INDEX = []
-    IMAGE_PATHS = []
-
-    valid_exts = ("*.png", "*.jpg", "*.jpeg", "*.webp")
-    all_imgs = []
-    for ext in valid_exts:
-        all_imgs.extend(glob.glob(os.path.join(LOCAL_DIR, "**", ext), recursive=True))
-
-    all_imgs = [p for p in set(all_imgs) if "logo" not in os.path.basename(p).lower()]
-
-    for path in all_imgs:
-        try:
-            img = Image.open(path).convert('RGB')
-            embedding = visual_model.encode(img, convert_to_tensor=True)
-            IMAGE_INDEX.append(embedding)
-            IMAGE_PATHS.append(path)
-        except Exception:
-            continue
-
-    if IMAGE_INDEX:
-        IMAGE_INDEX = torch.stack(IMAGE_INDEX)
-
-build_visual_database()
+# إطلاق المزامنة في الخلفية فور تشغيل الكود
+threading.Thread(target=sync_drive_background, daemon=True).start()
 
 def get_logo_base64():
     for ext in ["logo.png", "logo.jpg", "logo.jpeg"]:
@@ -154,8 +166,9 @@ def find_part_by_image(uploaded_image):
     if len(IMAGE_INDEX) == 0:
         return None, 0.0
 
+    model = get_visual_model()
     uploaded_rgb = uploaded_image.convert('RGB')
-    query_emb = visual_model.encode(uploaded_rgb, convert_to_tensor=True)
+    query_emb = model.encode(uploaded_rgb, convert_to_tensor=True)
     cos_scores = util.cos_sim(query_emb, IMAGE_INDEX)[0]
     best_idx = torch.argmax(cos_scores).item()
     best_score = float(cos_scores[best_idx])
@@ -203,6 +216,10 @@ def search_part_number_in_all_manuals(raw_input):
 
 def visual_maintenance_copilot(image_file, text_input):
     user_text = (text_input or "").strip()
+
+    all_pdfs = glob.glob(f"{LOCAL_DIR}/**/*.pdf", recursive=True)
+    if not all_pdfs:
+        return f"⏳ حالة النظام: {sync_status}\nيرجى الانتظار دقيقة لإتمام مزامنة الملفات من Google Drive والمحاولة مجدداً.", None
 
     if image_file is not None:
         matched_img_path, similarity_score = find_part_by_image(image_file)
@@ -295,7 +312,7 @@ with gr.Blocks(title="منصة الدعم الهندسي - التعرف البص
     with gr.Row():
         with gr.Column(scale=1):
             cam_box = gr.Image(sources=["upload", "webcam"], type="pil", label="📷 تصوير القطعة أو رفع صورة من الهاتف")
-            text_box = gr.Textbox(lines=1, label="📝 أو اكتب رقم القطعة مباشرة (اختياري)", placeholder="مثال: 0000.D475.000.94")
+            text_box = gr.Textbox(lines=1, label="📝 أو اكتب رقم القطعة مباشرة (اختياري)", placeholder="مثال: 0000.D409.003.01")
             search_btn = gr.Button("🔍 فحص ومطابقة القطعة بالكتالوجات", variant="primary")
 
         with gr.Column(scale=1):
