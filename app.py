@@ -50,38 +50,41 @@ sync_data_from_gcs()
 # ==========================================
 # 1. إعدادات تنبيهات الصيانة عبر الواتساب (Green-API)
 # ==========================================
-from datetime import datetime
-import pytz
-import requests
+# ==========================================
+# دالة موحدة ومتكاملة لإرسال تنبيهات الواتساب
+# ==========================================
+def send_whatsapp_alert(part_or_query, hit_details=None, has_image=False):
+    # بيانات الاتصال المباشرة بحساب Green-API
+    instance_id = "710722737613"[cite: 14, 15]
+    api_token = "8902219901b2411cb1ebfa944bbfc3d7d499d671111c4fe18e"[cite: 15]
+    chat_id = "970599431267@c.us"[cite: 16]
+    
+    # توقيت البلاغ
+    tz = pytz.timezone('Asia/Hebron')
+    timestamp = datetime.now(tz).strftime('%Y-%m-%d %I:%M %p')
+    
+    # صياغة نص الرسالة
+    message = f"🔔 *إشعار صيانة ومطابقة - مسلخ عزيزا*\n"
+    message += f"⏰ الوقت: {timestamp}\n"
+    message += f"🔍 القطعة / البلاغ: `{part_or_query}`\n"
+    
+    if hit_details:
+        message += f"📖 المرجع الفني: {hit_details.get('filename')} (صفحة {hit_details.get('page')})\n"
+    if has_image:
+        message += f"🖼️ الحالة: تم استخراج صورة مطابقة من أرشيف المستودع."
 
-# إعدادات Green-API والبيانات الخاصة بك
-ID_INSTANCE = "710722737613"
-API_TOKEN = "8902219901b2411cb1ebfa944bbfc3d7d499d671111c4fe18e"
-MY_PHONE = "970599431267"
-
-
-def send_whatsapp_alert(query_text, info_summary):
+    # رابط الاستدعاء والإرسال المباشر
+    url = f"https://api.green-api.com/waInstance{instance_id}/sendMessage/{api_token}"[cite: 14]
+    payload = {
+        "chatId": chat_id,[cite: 14]
+        "message": message[cite: 14]
+    }
+    
     try:
-        url = f"https://7107.api.greenapi.com/waInstance{ID_INSTANCE}/sendMessage/{API_TOKEN}"
-        local_tz = pytz.timezone("Asia/Gaza")
-        now_str = datetime.now(local_tz).strftime("%I:%M %p")
-
-        payload = {
-            "chatId": f"{MY_PHONE}@c.us",
-            "message": (
-                f"🏭 *مسلخ شركة دواجن فلسطين - استفسار صيانة*\n"
-                f"⏰ الوقت: {now_str}\n"
-                f"🔍 الاستفسار: {query_text}\n"
-                f"📋 النتيجة: {info_summary}"
-            ),
-        }
-
-        # تنفيذ الإرسال
-        response = requests.post(url, json=payload, timeout=5)
-        return response.json()
-
-    except Exception as err:
-        print(f"[!] خطأ في إرسال إشعار الواتساب: {err}")
+        response = requests.post(url, json=payload, timeout=8)[cite: 14]
+        print(f"[*] WhatsApp Status: {response.status_code}, Response: {response.text}")
+    except Exception as e:
+        print(f"[!] WhatsApp Send Error: {e}")
 # ==========================================
 # 2. تحميل النماذج وفهرسة الكتالوجات والمستودع
 # ==========================================
