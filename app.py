@@ -272,8 +272,8 @@ HEADER_HTML = f"""
                 {logo_img_tag}
             </div>
             <div>
-                <h1 style="margin: 0; font-size: 24px; font-weight: 800; color: #ffffff;">شركة دواجن فلسطين - مسلخ عزيزا المركزي</h1>
-                <p style="margin: 4px 0 0 0; font-size: 14px; color: #e8f5e9;">المنصة الهندسية لمطابقة الكتالوجات وتشخيص الأعطال (Meyn • ماكينات التغليف Automac • منظومات التبريد)</p>
+                <h1 style="margin: 0; font-size: 24px; font-weight: 800; color: #ffffff;">شركة دواجن فلسطين - مسلخ عزيزا </h1>
+                <p style="margin: 4px 0 0 0; font-size: 14px; color: #e8f5e9;">المنصة الهندسية لمطابقة الكتالوجات وتشخيص الأعطال (Meyn • ماكينات التغليف Automac •  )</p>
             </div>
         </div>
         <div style="border-right: 2px solid rgba(255,255,255,0.25); padding-right: 20px;">
