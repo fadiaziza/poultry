@@ -52,16 +52,12 @@ sync_data_from_gcs()
 # ==========================================
 ID_INSTANCE = "710722737613"
 API_TOKEN_INSTANCE = "8902219901b2411cb1ebfa944bbfc3d7d499d671111c4fe18e"
-ALERT_GROUP_ID = "970599431267@c.us"  
-def send_whatsapp_alert(message):
-    """إرسال إشعار فوري لمجموعة طاقم الصيانة عند رصد عطل أو طلب قطعة"""
-    if not API_TOKEN_INSTANCE or "YOUR_GREEN_API" in API_TOKEN_INSTANCE:
-        return
-    if not ALERT_GROUP_ID or "YOUR_PHONE" in ALERT_GROUP_ID:
-        return
+ALERT_RECIPIENT_ID = "970599431267@c.us"
 
+def send_whatsapp_alert(message):
+    """إرسال إشعار فوري للرقم الشخصي عند رصد عطل أو طلب قطعة"""
     url = f"https://api.green-api.com/waInstance{ID_INSTANCE}/sendMessage/{API_TOKEN_INSTANCE}"
-    payload = {"chatId": ALERT_GROUP_ID, "message": message}
+    payload = {"chatId": ALERT_RECIPIENT_ID, "message": message}
     try:
         requests.post(url, json=payload, timeout=5)
     except Exception as err:
