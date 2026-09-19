@@ -3,8 +3,6 @@ import glob
 import re
 import io
 import base64
-import threading
-import time
 import fitz  # PyMuPDF
 import requests
 from datetime import datetime
@@ -13,174 +11,84 @@ from PIL import Image
 import torch
 from sentence_transformers import SentenceTransformer, util
 import gradio as gr
-
-import google.auth
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseDownload
+from google.cloud import storage
 
 PORT = int(os.environ.get("PORT", 8080))
 
 # ==========================================
-# 1. إعدادات المسارات والمتغيرات
+# 1. إعدادات النظام وتنبيهات الواتساب
 # ==========================================
 ID_INSTANCE = "710722737613"
 API_TOKEN = "8902219901b2411cb1ebfa944bbfc3d7d499d671111c4fe18e"
 MY_PHONE = "970599431267"
 
+BUCKET_NAME = "aziza-manuals-storage"
 LOCAL_DIR = "/tmp/Maintenance_Manuals"
 os.makedirs(LOCAL_DIR, exist_ok=True)
 
-FOLDER_NAME = "Maintenance_Manuals"
+print(f"📦 جاري مزامنة الكتالوجات والصور من Google Cloud Storage: {BUCKET_NAME}...")
+try:
+    client = storage.Client()
+    bucket = client.bucket(BUCKET_NAME)
+    blobs = list(bucket.list_blobs())
+    print(f"🔍 تم العثور على {len(blobs)} ملف في الحاوية السحابية.")
+    for blob in blobs:
+        # تجنب المجلدات الافتراضية
+        if blob.name.endswith("/"):
+            continue
+        dest_path = os.path.join(LOCAL_DIR, blob.name)
+        os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+        if not os.path.exists(dest_path):
+            blob.download_to_filename(dest_path)
+    print("✅ اكتملت المزامنة السحابية فائقة السرعة بنجاح!")
+except Exception as e:
+    print(f"⚠️ خطأ أثناء المزامنة السحابية: {e}")
 
-visual_model = None
+# مسار العمل على الملفات المحلية بعد سحبها
+MANUALS_DIR = LOCAL_DIR
+
+device = "cuda" if torch.cuda.is_available() else "cpu"
+print(f"⚡ جاري تحميل نموذج CLIP على: {device}")
+visual_model = SentenceTransformer('clip-ViT-B-32', device=device)
+
 IMAGE_INDEX = []
 IMAGE_PATHS = []
-SYSTEM_LOGS = "بدء تشغيل النظام والاتصال بالسيرفر..."
-is_syncing = False
 
-def get_visual_model():
-    global visual_model
-    if visual_model is None:
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        visual_model = SentenceTransformer('clip-ViT-B-32', device=device)
-    return visual_model
+def build_visual_database():
+    """بناء بصمات صور القطع من المجلد المحلي"""
+    global IMAGE_INDEX, IMAGE_PATHS
+    IMAGE_INDEX = []
+    IMAGE_PATHS = []
 
-def build_visual_database_now():
-    """بناء وتحديث فهرس الصور فورا"""
-    global IMAGE_INDEX, IMAGE_PATHS, SYSTEM_LOGS
     valid_exts = ("*.png", "*.jpg", "*.jpeg", "*.webp", "*.PNG", "*.JPG", "*.JPEG")
     all_imgs = []
     for ext in valid_exts:
-        all_imgs.extend(glob.glob(os.path.join(LOCAL_DIR, "**", ext), recursive=True))
+        all_imgs.extend(glob.glob(os.path.join(MANUALS_DIR, "**", ext), recursive=True))
 
     target_imgs = [p for p in set(all_imgs) if "logo" not in os.path.basename(p).lower()]
-    if not target_imgs:
-        return
+    print(f"🔍 جاري فهرسة {len(target_imgs)} صورة قطع...")
 
-    model = get_visual_model()
-    embeddings = []
-    paths = []
-    for p in target_imgs:
+    for path in target_imgs:
         try:
-            img = Image.open(p).convert('RGB')
-            embeddings.append(model.encode(img, convert_to_tensor=True))
-            paths.append(p)
+            img = Image.open(path).convert('RGB')
+            IMAGE_INDEX.append(visual_model.encode(img, convert_to_tensor=True))
+            IMAGE_PATHS.append(path)
         except Exception:
             continue
 
-    if embeddings:
-        IMAGE_INDEX = torch.stack(embeddings)
-        IMAGE_PATHS = paths
-        print(f"✅ تم تجهيز الفهرس البصري لـ {len(IMAGE_PATHS)} صورة.", flush=True)
+    if IMAGE_INDEX:
+        IMAGE_INDEX = torch.stack(IMAGE_INDEX)
+        print(f"✅ تم فهرسة {len(IMAGE_PATHS)} صورة بنجاح.")
 
-def sync_drive_worker():
-    global SYSTEM_LOGS, IMAGE_INDEX, IMAGE_PATHS, is_syncing
-    is_syncing = True
-    SYSTEM_LOGS = "جاري الاتصال بـ Google Drive..."
-    print(SYSTEM_LOGS, flush=True)
+build_visual_database()
 
-    try:
-        credentials, _ = google.auth.default(scopes=['https://www.googleapis.com/auth/drive.readonly'])
-        drive_service = build('drive', 'v3', credentials=credentials, cache_discovery=False)
-
-        query = f"name = '{FOLDER_NAME}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
-        res = drive_service.files().list(q=query, fields="files(id, name)").execute()
-        folders = res.get('files', [])
-
-        if not folders:
-            query_shared = "mimeType = 'application/vnd.google-apps.folder' and trashed = false and sharedWithMe = true"
-            res_shared = drive_service.files().list(q=query_shared, fields="files(id, name)").execute()
-            folders = [f for f in res_shared.get('files', []) if f['name'] == FOLDER_NAME]
-
-        if not folders:
-            SYSTEM_LOGS = "❌ لم يتم العثور على المجلد! تأكد من مشاركته مع حساب الخدمة."
-            print(SYSTEM_LOGS, flush=True)
-            is_syncing = False
-            return
-
-        folder_id = folders[0]['id']
-        SYSTEM_LOGS = "تم العثور على المجلد، جاري مسح القوائم وتنزيل الصور أولاً..."
-        print(SYSTEM_LOGS, flush=True)
-
-        image_items = []
-        pdf_items = []
-
-        # مسح الشجرة وتصنيف الملفات
-        def scan_tree(parent_id, current_local_dir):
-            os.makedirs(current_local_dir, exist_ok=True)
-            page_token = None
-            while True:
-                resp = drive_service.files().list(
-                    q=f"'{parent_id}' in parents and trashed = false",
-                    fields="nextPageToken, files(id, name, mimeType)",
-                    pageSize=100,
-                    pageToken=page_token
-                ).execute()
-
-                for it in resp.get('files', []):
-                    c_name = re.sub(r'[\\/*?:"<>|]', '_', it['name'])
-                    dest = os.path.join(current_local_dir, c_name)
-                    if it['mimeType'] == 'application/vnd.google-apps.folder':
-                        scan_tree(it['id'], dest)
-                    else:
-                        low = c_name.lower()
-                        if low.endswith(('.png', '.jpg', '.jpeg', '.webp')):
-                            image_items.append((it['id'], dest, c_name))
-                        elif low.endswith('.pdf'):
-                            pdf_items.append((it['id'], dest, c_name))
-
-                page_token = resp.get('nextPageToken', None)
-                if not page_token:
-                    break
-
-        scan_tree(folder_id, LOCAL_DIR)
-
-        # 1. تنزيل الصور وبناء الفهرس البصري فوراً
-        for f_id, dest, c_name in image_items:
-            if not os.path.exists(dest):
-                try:
-                    req = drive_service.files().get_media(fileId=f_id)
-                    with open(dest, "wb") as f:
-                        downloader = MediaIoBaseDownload(f, req, chunksize=1024*1024)
-                        done = False
-                        while not done:
-                            _, done = downloader.next_chunk()
-                except Exception:
-                    continue
-
-        build_visual_database_now()
-        SYSTEM_LOGS = f"✅ الصور جاهزة ({len(IMAGE_PATHS)} صورة). جاري استكمال تحميل الكتالوجات..."
-        print(SYSTEM_LOGS, flush=True)
-
-        # 2. تنزيل ملفات الـ PDF
-        for f_id, dest, c_name in pdf_items:
-            if not os.path.exists(dest):
-                try:
-                    req = drive_service.files().get_media(fileId=f_id)
-                    with open(dest, "wb") as f:
-                        downloader = MediaIoBaseDownload(f, req, chunksize=2*1024*1024)
-                        done = False
-                        while not done:
-                            _, done = downloader.next_chunk()
-                    print(f"تم تحميل كتالوج: {c_name}", flush=True)
-                except Exception:
-                    continue
-
-        all_pdfs = glob.glob(os.path.join(LOCAL_DIR, "**", "*.pdf"), recursive=True)
-        SYSTEM_LOGS = f"✅ اكتملت المزامنة بنجاح! المفهرس: {len(all_pdfs)} كتالوج PDF و {len(IMAGE_PATHS)} صورة قطعة."
-        print(SYSTEM_LOGS, flush=True)
-
-    except Exception as e:
-        SYSTEM_LOGS = f"❌ خطأ في عملية المزامنة: {str(e)}"
-        print(SYSTEM_LOGS, flush=True)
-    finally:
-        is_syncing = False
-
-threading.Thread(target=sync_drive_worker, daemon=True).start()
+all_pdfs_count = len(glob.glob(os.path.join(MANUALS_DIR, "**", "*.pdf"), recursive=True))
+SYSTEM_LOGS = f"✅ النظام جاهز بالكامل! مفهرس: {all_pdfs_count} كتالوج PDF و {len(IMAGE_PATHS)} صورة قطعة."
+print(SYSTEM_LOGS)
 
 def get_logo_base64():
     for ext in ["logo.png", "logo.jpg", "logo.jpeg"]:
-        for p in glob.glob(os.path.join(LOCAL_DIR, "**", ext), recursive=True):
+        for p in glob.glob(os.path.join(MANUALS_DIR, "**", ext), recursive=True):
             if os.path.exists(p):
                 with open(p, "rb") as img_file:
                     b64 = base64.b64encode(img_file.read()).decode("utf-8")
@@ -198,13 +106,13 @@ def send_whatsapp_alert(query_text, info_summary):
             "message": (
                 f"🏭 *مسلخ شركة دواجن فلسطين - استفسار فني*\n"
                 f"⏰ الوقت: {now_str}\n"
-                f"🔍 الاستفسار/القطعة: {query_text}\n"
+                f"🔍 الاستفسار: {query_text}\n"
                 f"📋 النتيجة: {info_summary}"
             )
         }
         requests.post(url, json=payload, headers={'Content-Type': 'application/json'}, timeout=4)
     except Exception as e:
-        print(f"WhatsApp Error: {e}", flush=True)
+        print(f"WhatsApp Error: {e}")
 
 def get_clean_machine_name(pdf_path):
     fname = os.path.basename(pdf_path)
@@ -255,11 +163,10 @@ def search_part_number_in_all_manuals(raw_input):
         return clean_input, detected_key, []
 
     search_regex = re.compile(r'(' + '|'.join(valid_targets) + r')', re.IGNORECASE)
-    all_pdfs = glob.glob(f"{LOCAL_DIR}/**/*.pdf", recursive=True)
+    all_pdfs = glob.glob(f"{MANUALS_DIR}/**/*.pdf", recursive=True)
     matches = []
 
     for pdf_path in all_pdfs:
-        doc_name = os.path.basename(pdf_path)
         try:
             doc = fitz.open(pdf_path)
             for page_num in range(len(doc)):
@@ -287,20 +194,14 @@ def search_part_number_in_all_manuals(raw_input):
     return clean_input, detected_key, matches
 
 def visual_maintenance_copilot(image_file, text_input):
-    global IMAGE_INDEX, IMAGE_PATHS, SYSTEM_LOGS
-
-    status_prefix = f"> 📡 **حالة السيرفر والملفات:** `{SYSTEM_LOGS}`\n\n---\n\n"
+    status_prefix = f"> 📡 **حالة النظام:** `{SYSTEM_LOGS}`\n\n---\n\n"
 
     if image_file is not None:
         if len(IMAGE_INDEX) == 0:
-            build_visual_database_now()
+            return status_prefix + "⚠️ لا توجد صور مفهرسة في المجلد.", None
 
-        if len(IMAGE_INDEX) == 0:
-            return status_prefix + "⚠️ **قاعدة بيانات الصور قيد التنزيل والمعالجة.** يرجى المحاولة بعد لحظات.", None
-
-        model = get_visual_model()
         uploaded_rgb = image_file.convert('RGB')
-        query_emb = model.encode(uploaded_rgb, convert_to_tensor=True)
+        query_emb = visual_model.encode(uploaded_rgb, convert_to_tensor=True)
         cos_scores = util.cos_sim(query_emb, IMAGE_INDEX)[0]
         best_idx = torch.argmax(cos_scores).item()
         best_score = float(cos_scores[best_idx])
@@ -323,16 +224,16 @@ def visual_maintenance_copilot(image_file, text_input):
 
             res = status_prefix + f"### 🎯 نتيجة التعرف البصري على القطعة\n\n"
             res += f"* **نسبة التطابق البصري:** `{percent}%`\n"
-            res += f"* **رقم القطعة:** `{refined_query}` *(الملف: `{raw_part_code}`)*\n\n"
-            res += "### 📖 المطابقة في الكتالوجات:\n\n"
+            res += f"* **رقم القطعة المعتمد:** `{refined_query}`\n\n"
+            res += "### 📖 بيانات الكتالوجات والماكينات المشتركة:\n\n"
 
             if manual_matches:
                 for idx, item in enumerate(manual_matches, 1):
                     res += f"**{idx}. {item['machine_name']}**\n"
-                    res += f"* 📄 الصفحة: **{item['page']}**\n"
-                    res += f"* ⚙️ التفاصيل: `{item['details']}`\n\n"
+                    res += f"* 📄 **الصفحة داخل الدليل:** صفحة **{item['page']}**\n"
+                    res += f"* ⚙️ **التفاصيل الفنية:** `{item['details']}`\n\n"
             else:
-                res += f"تم التعرف على القطعة بنجاح، وجاري استكمال مطابقة رقمها `{refined_query}` في الكتالوجات حال انتهاء تنزيل باقي ملفات PDF.\n"
+                res += f"تم التعرف على شكل القطعة ولكن لم يتم العثور على الرقم `{refined_query}` داخل نصوص الكتالوجات المرفوعة.\n"
             return res, matched_pil
         else:
             return status_prefix + f"⚠️ لم يتم العثور على تطابق كافٍ (نسبة الثقة: {int(best_score * 100)}%).", None
@@ -364,16 +265,13 @@ def visual_maintenance_copilot(image_file, text_input):
             for idx, item in enumerate(found_records, 1):
                 res += f"**{idx}. {item['machine_name']}**\n"
                 res += f"* 📄 الصفحة داخل الدليل: **{item['page']}**\n"
-                res += f"* ⚙️ التفاصيل الفنية والحلول: `{item['details']}`\n\n"
+                res += f"* ⚙️ البيانات والحلول الفنية: `{item['details']}`\n\n"
             return res, found_img
         else:
             return status_prefix + f"⚠️ لم يتم العثور على تطابق في الكتالوجات للرمز/الرقم `{detected_key}`.", None
 
     return status_prefix + "يرجى التقاط صورة للقطعة أو كتابة رقمها/كود الإنذار للبدء.", None
 
-# ==========================================
-# 2. الواجهة الرسومية
-# ==========================================
 logo_data_url = get_logo_base64()
 logo_html = f'<img src="{logo_data_url}" style="height: 75px; margin-left: 20px; border-radius: 8px; vertical-align: middle;">' if logo_data_url else ''
 
@@ -398,7 +296,7 @@ footer_markdown = """
 with gr.Blocks(title="منصة الدعم الهندسي - التعرف البصري على القطع") as demo:
     gr.HTML(header_markdown)
     gr.Markdown("""
-    * **فحص القطعة بالصورة:** التقط صورة واضحة للقطعة الميكانيكية، وسيتعرف النظام على شكلها، ويستخرج رقمها المصنعي، ويحدد كافة الماكينات المشتركة ورقم الصفحة.
+    * **فحص القطعة بالصورة:** التقط صورة واضحة للقطعة الميكانيكية، وسيتعرف النظام على شكلها ويحدد كافة الماكينات المشتركة ورقم الصفحة.
     * **البحث النصي / أكواد الأعطال:** يمكنك إدخال رقم القطعة مباشرة، أو كتابة كود الإنذار (مثل **E002**) لمطابقة العطل في أدلة التشغيل والصيانة.
     """)
 
@@ -425,6 +323,5 @@ if __name__ == "__main__":
         server_name="0.0.0.0",
         server_port=PORT,
         share=False,
-        inbrowser=False,
-        allowed_paths=["/tmp"]
+        inbrowser=False
     )
