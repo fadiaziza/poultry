@@ -48,23 +48,37 @@ sync_data_from_gcs()
 # ==========================================
 # 1. إعدادات تنبيهات الواتساب (Green-API)
 # ==========================================
-ID_INSTANCE = "710722737613"
-API_TOKEN_INSTANCE = os.environ.get("GREEN_API_TOKEN", "YOUR_GREEN_API_TOKEN_HERE")
-ALERT_GROUP_ID = os.environ.get("ALERT_GROUP_ID", "YOUR_PHONE_OR_GROUP_HERE") 
+# ==========================================
+# دالة موحدة ومتكاملة لإرسال تنبيهات الواتساب
+# ==========================================
+def send_whatsapp_alert(part_or_query, hit_details=None, has_image=False):
+    instance_id = "710722737613"
+    api_token = "8902219901b2411cb1ebfa944bbfc3d7d499d671111c4fe18e"
+    chat_id = "970599431267@c.us"
+    
+    tz = pytz.timezone('Asia/Hebron')
+    timestamp = datetime.now(tz).strftime('%Y-%m-%d %I:%M %p')
+    
+    message = f"🔔 *إشعار صيانة ومطابقة - مسلخ عزيزا*\n"
+    message += f"⏰ الوقت: {timestamp}\n"
+    message += f"🔍 القطعة / البلاغ: `{part_or_query}`\n"
+    
+    if hit_details:
+        message += f"📖 المرجع الفني: {hit_details.get('filename')} (صفحة {hit_details.get('page')})\n"
+    if has_image:
+        message += f"🖼️ الحالة: تم استخراج صورة مطابقة من أرشيف المستودع."
 
-def send_whatsapp_alert(message):
-    if not API_TOKEN_INSTANCE or "YOUR_GREEN_API" in API_TOKEN_INSTANCE:
-        return
-    if not ALERT_GROUP_ID or "YOUR_PHONE" in ALERT_GROUP_ID:
-        return
-
-    url = f"https://api.green-api.com/waInstance{ID_INSTANCE}/sendMessage/{API_TOKEN_INSTANCE}"
-    payload = {"chatId": ALERT_GROUP_ID, "message": message}
+    url = f"https://api.green-api.com/waInstance{instance_id}/sendMessage/{api_token}"
+    payload = {
+        "chatId": chat_id,
+        "message": message
+    }
+    
     try:
-        requests.post(url, json=payload, timeout=5)
-    except Exception as err:
-        print(f"[!] WhatsApp notification error: {err}")
-
+        response = requests.post(url, json=payload, timeout=8)
+        print(f"[*] WhatsApp Status: {response.status_code}, Response: {response.text}")
+    except Exception as e:
+        print(f"[!] WhatsApp Send Error: {e}")
 # ==========================================
 # 2. فهرسة صفحات الكتالوجات وصور المستودع الهندسية
 # ==========================================
