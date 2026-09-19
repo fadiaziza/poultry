@@ -1,17 +1,3 @@
-embedding = visual_model.encode(img, convert_to_tensor=True)
-IMAGE_INDEX.append(embedding)
-IMAGE_PATHS.append(path)
-...
-IMAGE_INDEX = torch.stack(IMAGE_INDEX)
-```[cite: 22]
-
-السبب في نجاح هذه الطريقة في Colab وفشلها في Cloud Run سابقاً هو:
-1. **الذاكرة أثناء التشغيل**: في Colab لديك 12.7 GB رام ومعالج/كارت شاشة، بينما في Cloud Run مع آلاف الصور تستهلك دالة `encode` دفعة واحدة كامل الذاكرة إذا لم تُعالج عبر دفعات (`batches`) خفيفة وبدون حفظ التدرجات (`torch.no_grad()`).
-2. **استخراج رقم القطعة من اسم ملف الصورة**: عندما يجد التطابق في `IMAGE_PATHS`، يأخذ اسم الملف الذي هو رقم القطعة (مثل `0000.D409.003.01`)[cite: 21] ويبحث عنه فوراً في صفحات الكتالوجات الـ PDF.
-
-إليك الكود المكتمل لملف **`poultry/app.py`** مدمجاً به كود Colab نفسه مع ضبطه ليعمل بثبات كامل على Cloud Run:
-
-```python
 import os
 import glob
 import re
@@ -28,7 +14,7 @@ import gradio as gr
 from google.cloud import storage
 
 # ==========================================
-# 0. إعدادات السحابة والمنفذ
+# 0. إعدادات البيئة السحابية والمنفذ
 # ==========================================
 PORT = int(os.environ.get("PORT", 8080))
 BUCKET_NAME = "aziza-manuals-storage"
@@ -36,6 +22,7 @@ BASE_DIR = "/tmp/Maintenance_Manuals"
 IMAGE_DIR = os.path.join(BASE_DIR, "Real_Parts_Images")
 
 def sync_data_from_gcs():
+    """مزامنة ملفات الـ PDF وصور قطع الغيار من الحاوية السحابية GCS"""
     os.makedirs(BASE_DIR, exist_ok=True)
     os.makedirs(IMAGE_DIR, exist_ok=True)
     print(f"[*] Starting download from GCS bucket: {BUCKET_NAME}...")
@@ -54,20 +41,21 @@ def sync_data_from_gcs():
             if not os.path.exists(dest_path):
                 blob.download_to_filename(dest_path)
                 count += 1
-        print(f"[✓] GCS Sync completed. Downloaded {count} files.")
+        print(f"[✓] GCS Sync completed. Downloaded {count} new files.")
     except Exception as e:
         print(f"[!] Warning during GCS sync: {e}")
 
 sync_data_from_gcs()
 
 # ==========================================
-# 1. إعدادات تنبيهات الواتساب (Green-API)
+# 1. إعدادات تنبيهات الصيانة عبر الواتساب (Green-API)
 # ==========================================
 ID_INSTANCE = "710722737613"
 API_TOKEN_INSTANCE = os.environ.get("GREEN_API_TOKEN", "YOUR_GREEN_API_TOKEN_HERE")
 ALERT_GROUP_ID = os.environ.get("ALERT_GROUP_ID", "YOUR_PHONE_OR_GROUP_HERE") 
 
 def send_whatsapp_alert(message):
+    """إرسال إشعار فوري لمجموعة طاقم الصيانة عند رصد عطل أو طلب قطعة"""
     if not API_TOKEN_INSTANCE or "YOUR_GREEN_API" in API_TOKEN_INSTANCE:
         return
     if not ALERT_GROUP_ID or "YOUR_PHONE" in ALERT_GROUP_ID:
@@ -81,13 +69,13 @@ def send_whatsapp_alert(message):
         print(f"[!] WhatsApp notification error: {err}")
 
 # ==========================================
-# 2. تحميل النماذج (نفس طريقة Colab)
+# 2. تحميل النماذج وفهرسة الكتالوجات والمستودع
 # ==========================================
 device = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"[*] Loading visual model (clip-ViT-B-32) on {device}...")
 visual_model = SentenceTransformer("clip-ViT-B-32", device=device)
 
-# فهرسة ملفات PDF
+# فهرس نصوص الكتالوجات (PDFs)
 manual_pages = []
 
 def build_manual_index():
@@ -109,11 +97,11 @@ def build_manual_index():
                     })
         except Exception:
             pass
-    print(f"[✓] Indexed {len(manual_pages)} pages from manuals.")
+    print(f"[✓] Successfully indexed {len(manual_pages)} pages from manuals.")
 
 build_manual_index()
 
-# فهرسة الصور بصرياً تماماً كما في Colab مع حماية الرام
+# فهرسة الصور بصرياً (خوارزمية Colab المعتمدة مع تحسين إدارة الذاكرة)
 IMAGE_INDEX = None
 IMAGE_PATHS = []
 
@@ -126,9 +114,8 @@ def build_visual_index():
         for ext in valid_exts:
             all_imgs.extend(glob.glob(os.path.join(IMAGE_DIR, "**", ext), recursive=True))
             
-    # استبعاد الشعارات والصور المكررة
     all_imgs = [p for p in set(all_imgs) if "logo" not in os.path.basename(p).lower()]
-    print(f"[*] Found {len(all_imgs)} images. Indexing visual embeddings...")
+    print(f"[*] Found {len(all_imgs)} warehouse images. Processing visual embeddings...")
     
     loaded_embeddings = []
     loaded_paths = []
@@ -138,7 +125,7 @@ def build_visual_index():
             try:
                 img = Image.open(path).convert('RGB')
                 embedding = visual_model.encode(img, convert_to_tensor=True)
-                loaded_embeddings.append(embedding.cpu())  # حفظها في المعالج لتفادي خنق الذاكرة
+                loaded_embeddings.append(embedding.cpu())
                 loaded_paths.append(path)
             except Exception:
                 continue
@@ -147,12 +134,10 @@ def build_visual_index():
         IMAGE_INDEX = torch.stack(loaded_embeddings)
         IMAGE_PATHS = loaded_paths
         print(f"[✓] Successfully indexed {len(IMAGE_PATHS)} warehouse part images.")
-    else:
-        print("[!] No images found or indexed.")
 
 build_visual_index()
 
-# تحويل اللوجو logo.png لـ Base64
+# تحويل الشعار المحلي المعتمد logo.png إلى Base64
 logo_base64 = ""
 for p in ["logo.png", "/app/logo.png"]:
     if os.path.exists(p):
@@ -164,7 +149,7 @@ for p in ["logo.png", "/app/logo.png"]:
             pass
 
 # ==========================================
-# 3. محرك البحث والتشخيص ومطابقة الصور
+# 3. محرك البحث الهجين (البصري والنصي الصارم)
 # ==========================================
 def search_by_image(uploaded_pil_img):
     """مطابقة الصورة المرفوعة مع صور المستودع باستخدام خوارزمية Colab"""
@@ -175,27 +160,26 @@ def search_by_image(uploaded_pil_img):
     try:
         with torch.no_grad():
             query_emb = visual_model.encode(uploaded_pil_img.convert('RGB'), convert_to_tensor=True).cpu()
-            # حساب التشابه الكوزيني Cosine Similarity
             scores = util.cos_sim(query_emb, IMAGE_INDEX)[0]
             best_idx = torch.argmax(scores).item()
             best_score = scores[best_idx].item()
             
-            # إذا تخطت نسبة التشابه عتبة القبول
-            if best_score >= 0.60:
+            # قبول التطابق إذا كانت النسبة 58% فما فوق
+            if best_score >= 0.58:
                 matched_path = IMAGE_PATHS[best_idx]
-                matched_filename = os.path.basename(matched_path)
-                part_number = os.path.splitext(matched_filename)[0]
+                part_number = os.path.splitext(os.path.basename(matched_path))[0]
                 return part_number, matched_path
     except Exception as e:
         print(f"[!] Visual search error: {e}")
     return None, None
 
 def search_text_in_manuals(query, top_k=5):
+    """البحث الدقيق عن أكواد القطع الرباعية وإنذارات الأعطال والمنظومات"""
     if not manual_pages:
         return [], None
     clean_q = query.strip()
     
-    # 1. فحص كود من 4 مقاطع
+    # 1. مطابقة كود القطعة المكون من 4 مقاطع (مرونة مع الفواصل والمسافات)
     codes_4 = re.findall(r'([A-Za-z0-9]+)[\.\s\-_/]+([A-Za-z0-9]+)[\.\s\-_/]+([A-Za-z0-9]+)[\.\s\-_/]+([A-Za-z0-9]+)', clean_q)
     if codes_4:
         for segs in codes_4:
@@ -204,7 +188,7 @@ def search_text_in_manuals(query, top_k=5):
             if matched:
                 return matched[:top_k], ".".join(segs)
 
-    # 2. فحص إنذارات الأعطال (E002)
+    # 2. مطابقة إنذارات الأعطال (مثل E002 و E02 و Alarm 02)
     alarms = re.findall(r'\b[A-Za-z]0*\d+\b|\bAlarm\s*\d+\b|\bError\s*\d+\b', clean_q, re.IGNORECASE)
     if alarms:
         for a in alarms:
@@ -218,7 +202,7 @@ def search_text_in_manuals(query, top_k=5):
                         matched = sorted(matched, key=lambda x: any(k in x["filename"].lower() for k in ["automac", "297", "298"]), reverse=True)
                     return matched[:top_k], a.upper()
 
-    # 3. توجيه الأعطال والماكينات المحددة بالعربية
+    # 3. توجيه الأعطال والماكينات المحددة بالاسم العربي
     keywords_map = {
         "مايسترو": (["maestro", "eviscerat"], ["infeed", "entry", "positioning", "shackle", "drawing", "guide"]),
         "تغليف": (["automac", "wrapping", "297", "298"], ["tray", "film", "alarm", "infeed", "stop"]),
@@ -242,7 +226,7 @@ def search_text_in_manuals(query, top_k=5):
             if scored:
                 return [x[1] for x in scored[:top_k]], ar_word
 
-    # 4. بحث مباشر عن أي رمز أو كلمة
+    # 4. بحث مباشر عن أي رمز أو كلمة إنجليزية
     eng_tokens = re.findall(r'[A-Za-z0-9]{3,}', clean_q)
     for tok in eng_tokens:
         pat = r'\b' + re.escape(tok) + r'\b'
@@ -253,6 +237,7 @@ def search_text_in_manuals(query, top_k=5):
     return [], None
 
 def find_image_by_part_name(part_no):
+    """استرجاع صورة القطعة من مجلد المستودع عبر رقمها"""
     if not os.path.exists(IMAGE_DIR) or not part_no:
         return None
     clean_target = re.sub(r'[^a-zA-Z0-9]', '', part_no).lower()
@@ -268,22 +253,22 @@ def maintenance_copilot(query, input_image=None):
     matched_image_path = None
     response = []
 
-    # 1. فحص الصورة المرفوعة بنموذج CLIP (طريقة Colab)
+    # معالجة البحث بالصورة المرفوعة أولاً
     if input_image is not None:
         detected_part_no, matched_path = search_by_image(input_image)
         if detected_part_no:
-            response.append(f"🔍 **تمت المطابقة البصرية للصورة بنجاح:** القطعة رقم `{detected_part_no}`")
+            response.append(f"🔍 **تمت المطابقة البصرية بنجاح:** القطعة رقم `{detected_part_no}`")
             matched_image_path = matched_path
             if not clean_q:
                 clean_q = detected_part_no
         else:
             if not clean_q:
-                return "❌ لم يتم العثور على صورة متطابقة بصرياً بدقة كافية في قاعدة صور المستودع.", None
+                return "❌ لم يتم العثور على صورة متطابقة بصرياً في قاعدة صور المستودع.", None
 
     if not clean_q:
-        return "⚠️ يرجى كتابة رقم القطعة، كود الإنذار، أو إرفاق صورتها.", None
+        return "⚠️ يرجى كتابة رقم القطعة (4 مقاطع)، كود الإنذار (مثل E002)، أو إرفاق صورتها.", None
 
-    # 2. البحث النصي في كتالوجات الـ PDF
+    # البحث النصي في صفحات الكتالوجات المفهرسة
     hits, matched_term = search_text_in_manuals(clean_q, top_k=4)
     if not matched_image_path:
         matched_image_path = find_image_by_part_name(matched_term if matched_term else clean_q)
@@ -309,7 +294,7 @@ def maintenance_copilot(query, input_image=None):
     if matched_image_path:
         response.append("\n🖼️ **تم إرفاق صورة القطعة الحقيقية من أرشيف المستودع أدناه.**")
 
-    # إشعار الواتساب
+    # إرسال تنبيه الواتساب
     tz = pytz.timezone('Asia/Hebron')
     timestamp = datetime.now(tz).strftime('%Y-%m-%d %I:%M %p')
     if any(k in clean_q.lower() for k in ["عطل", "مشكله", "مشكلة", "انذار", "إنذار", "تالف", "كسر", "alarm"]):
