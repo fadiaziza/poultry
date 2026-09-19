@@ -4,7 +4,6 @@ import io
 import json
 import base64
 import difflib
-import hashlib
 from pathlib import Path
 from datetime import datetime
 
@@ -25,7 +24,7 @@ except Exception:
 
 
 # ============================================================
-# 0) Configuration
+# 0) الإعدادات العامة والبيئة السحابية
 # ============================================================
 PORT = int(os.environ.get("PORT", "8080"))
 
@@ -35,76 +34,62 @@ BASE_DIR = Path(os.environ.get("BASE_DIR", "/tmp/Maintenance_Manuals"))
 IMAGE_DIR = BASE_DIR / "Real_Parts_Images"
 MANIFEST_FILE = BASE_DIR / ".gcs_manifest.json"
 
-GOOGLE_CLOUD_PROJECT = os.environ.get("GOOGLE_CLOUD_PROJECT", "")
-GOOGLE_CLOUD_LOCATION = os.environ.get("GOOGLE_CLOUD_LOCATION", "global")
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash")
+GOOGLE_CLOUD_PROJECT = os.environ.get("GOOGLE_CLOUD_PROJECT", "gen-lang-client-0093400131")
+GOOGLE_CLOUD_LOCATION = os.environ.get("GOOGLE_CLOUD_LOCATION", "us-central1")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
 
-# WhatsApp is optional. Never put secrets directly in GitHub.
-ID_INSTANCE = os.environ.get("GREEN_API_INSTANCE", "")
+# إعدادات Green-API للواتساب
+ID_INSTANCE = os.environ.get("GREEN_API_INSTANCE", "710722737613")
 API_TOKEN_INSTANCE = os.environ.get("GREEN_API_TOKEN", "")
-ALERT_GROUP_ID = os.environ.get("ALERT_GROUP_ID", "")
+ALERT_GROUP_ID = os.environ.get("ALERT_GROUP_ID", "970599431267@c.us")
 
 BASE_DIR.mkdir(parents=True, exist_ok=True)
 IMAGE_DIR.mkdir(parents=True, exist_ok=True)
 
 
 # ============================================================
-# 1) Text normalization / tokenization
+# 1) معالجة وتطبيع النصوص واستخراج الأكواد الرباعية والإنذارات
 # ============================================================
 ARABIC_DIACRITICS = re.compile(r"[\u0610-\u061A\u064B-\u065F\u0670\u06D6-\u06ED]")
-NON_WORD = re.compile(r"[^a-zA-Z0-9\u0600-\u06FF]+")
 
 ARABIC_ALIASES = {
     "ماكينة": "machine",
     "ماكينه": "machine",
     "مكينة": "machine",
     "مكينه": "machine",
-    "اعطال": "عطل",
-    "اعطال": "عطل",
+    "اعطال": "fault",
+    "عطل": "fault",
     "انذار": "alarm",
     "إنذار": "alarm",
-    "تبريد": "refrigeration chiller compressor",
     "كمبروسر": "compressor",
     "كمبرسور": "compressor",
     "ضاغط": "compressor",
-    "تغليف": "packaging wrapping",
-    "تعبئة": "packaging filling",
-    "مايسترو": "maestro",
+    "تغليف": "automac wrapping packaging",
+    "تعبئة": "packaging",
+    "مايسترو": "maestro eviscerator",
     "رياشة": "plucker picking",
     "رياشه": "plucker picking",
     "سمط": "scalder scalding",
-    "سَمْط": "scalder scalding",
     "نزع": "evisceration",
-    "احشاء": "evisceration viscera",
-    "أحشاء": "evisceration viscera",
-    "سيور": "conveyor belt",
+    "احشاء": "viscera eviscerator",
+    "أحشاء": "viscera eviscerator",
     "سير": "conveyor belt",
     "موتور": "motor",
     "محرك": "motor",
     "حساس": "sensor",
-    "مستشعر": "sensor",
     "ضغط": "pressure",
     "حرارة": "temperature",
-    "درجة": "temperature",
     "زيت": "oil",
-    "فيلم": "film",
+    "فيلم": "film"
 }
 
-MACHINE_ALIASES = {
-    "meyn": ["meyn", "maestro", "evisceration", "eviscerator"],
-    "maestro": ["meyn", "maestro", "evisceration", "eviscerator"],
-    "automac": ["automac", "packaging", "wrapping", "tray", "film"],
-    "fabbri": ["fabbri", "packaging", "wrapping", "tray", "film"],
-    "packaging": ["automac", "fabbri", "packaging", "wrapping", "film"],
-    "تغليف": ["automac", "fabbri", "packaging", "wrapping", "film"],
-    "refrigeration": ["refrigeration", "chiller", "compressor", "evaporator", "condenser"],
-    "تبريد": ["refrigeration", "chiller", "compressor", "evaporator", "condenser"],
-    "compressor": ["compressor", "airpol", "atlas", "pressure", "oil", "separator"],
-    "كمبرسور": ["compressor", "airpol", "atlas", "pressure", "oil", "separator"],
-    "plucker": ["plucker", "picking", "finger", "belt", "motor"],
-    "رياشة": ["plucker", "picking", "finger", "belt", "motor"],
-    "scalder": ["scalder", "scalding", "temperature", "water", "circulation"],
-    "سمط": ["scalder", "scalding", "temperature", "water", "circulation"],
+MACHINE_FILTERS = {
+    "مايسترو": ["maestro", "eviscerat"],
+    "تغليف": ["automac", "wrapping", "fabbri", "29703", "29800"],
+    "تبريد": ["compressor", "chiller", "refrigeration"],
+    "كمبرسور": ["compressor", "airpol", "atlas"],
+    "رياشة": ["plucker", "picking"],
+    "سمط": ["scalder", "scalding"]
 }
 
 def normalize_text(value: str) -> str:
@@ -115,48 +100,42 @@ def normalize_text(value: str) -> str:
     s = s.replace("أ", "ا").replace("إ", "ا").replace("آ", "ا")
     s = s.replace("ى", "ي").replace("ة", "ه")
     s = re.sub(r"[_/\\|]+", " ", s)
-    s = re.sub(r"\s+", " ", s)
-    return s
-
-def expand_query(query: str) -> str:
-    q = normalize_text(query)
-    words = re.findall(r"[a-zA-Z0-9\u0600-\u06FF]+", q)
-    expanded = [q]
-    for w in words:
-        if w in ARABIC_ALIASES:
-            expanded.append(ARABIC_ALIASES[w])
-        if w in MACHINE_ALIASES:
-            expanded.extend(MACHINE_ALIASES[w])
-    return " ".join(expanded)
+    return re.sub(r"\s+", " ", s)
 
 def clean_code(value: str) -> str:
     return re.sub(r"[^a-zA-Z0-9]", "", normalize_text(value)).lower()
 
 def extract_identifiers(text: str):
-    """Extract useful part numbers, alarms, model numbers and numeric identifiers."""
+    """استخراج كود القطعة المكون من 4 مقاطع بنقاط أو مسافات، أو أكواد الإنذارات."""
     if not text:
         return []
-    patterns = [
-        r"\b[A-Za-z]{1,6}\d{1,8}\b",                 # E002, M123
-        r"\b\d{2,8}(?:[.\-_]\d{1,8}){1,6}\b",       # 0990.AD05.007.00
-        r"\b[A-Za-z0-9]+(?:[.\-_][A-Za-z0-9]+){2,6}\b",
-        r"\b\d{6,18}\b",
-    ]
+    
     found = []
-    for pat in patterns:
-        found.extend(re.findall(pat, text))
+    
+    # 1. كود القطعة الرباعي: 0990.AD05.007.00 أو 89 3608 904 0096 أو 89.3844.900.0034
+    pattern_4_seg = r"\b[A-Za-z0-9]{2,8}[\.\s\-_]+[A-Za-z0-9]{2,8}[\.\s\-_]+[A-Za-z0-9]{2,8}[\.\s\-_]+[A-Za-z0-9]{2,8}\b"
+    found.extend(re.findall(pattern_4_seg, text))
+    
+    # 2. أكواد الإنذارات: E002, E02, E 02, Alarm 02, Error 1
+    pattern_alarm = r"\b(?:E|F|ALARM|ERROR)\s*0*\d{1,4}\b"
+    found.extend(re.findall(pattern_alarm, text, re.IGNORECASE))
+    
+    # 3. معرفات إضافية
+    pattern_std = r"\b[A-Za-z]{1,4}\d{2,8}\b|\b\d{6,14}\b"
+    found.extend(re.findall(pattern_std, text))
+
     out = []
     seen = set()
     for x in found:
         k = clean_code(x)
         if len(k) >= 3 and k not in seen:
             seen.add(k)
-            out.append(x)
+            out.append(x.strip())
     return out
 
 
 # ============================================================
-# 2) Google Cloud Storage synchronization
+# 2) مزامنة الملفات من Cloud Storage
 # ============================================================
 def load_manifest():
     try:
@@ -165,13 +144,12 @@ def load_manifest():
         return {}
 
 def save_manifest(manifest):
-    MANIFEST_FILE.write_text(
-        json.dumps(manifest, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    try:
+        MANIFEST_FILE.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception as e:
+        print(f"[GCS] manifest save error: {e}")
 
 def sync_data_from_gcs():
-    """Sync manuals/images from GCS and remove stale local files."""
     manifest = load_manifest()
     new_manifest = {}
     downloaded = 0
@@ -186,33 +164,20 @@ def sync_data_from_gcs():
                 continue
 
             relative = blob.name[len(GCS_PREFIX):]
-            if not relative:
+            if not relative or any(part == ".." for part in Path(relative).parts):
                 continue
 
-            # Prevent path traversal.
-            rel_path = Path(relative)
-            if any(part == ".." for part in rel_path.parts):
-                continue
-
-            local_path = BASE_DIR / rel_path
+            local_path = BASE_DIR / relative
             local_path.parent.mkdir(parents=True, exist_ok=True)
 
-            generation = str(blob.generation or "")
-            crc32c = str(blob.crc32c or "")
-            fingerprint = f"{generation}:{crc32c}:{blob.size}"
-
-            new_manifest[relative] = {
-                "fingerprint": fingerprint,
-                "generation": generation,
-                "size": blob.size,
-            }
+            fingerprint = f"{blob.generation}:{blob.crc32c}:{blob.size}"
+            new_manifest[relative] = {"fingerprint": fingerprint}
 
             old = manifest.get(relative, {})
             if not local_path.exists() or old.get("fingerprint") != fingerprint:
                 blob.download_to_filename(str(local_path))
                 downloaded += 1
 
-        # Remove local files that disappeared from GCS.
         for relative in manifest:
             if relative not in new_manifest:
                 stale = BASE_DIR / relative
@@ -222,16 +187,14 @@ def sync_data_from_gcs():
 
         save_manifest(new_manifest)
         print(f"[GCS] sync complete: downloaded={downloaded}, removed={removed}")
-        return True, f"GCS sync OK: {downloaded} downloaded, {removed} removed."
-
+        return True, f"تم التحديث بنجاح: {downloaded} ملف جديد."
     except Exception as exc:
-        print(f"[GCS] sync warning: {exc}")
-        # The application can still operate on already cached files.
-        return False, f"GCS sync failed; using local cache. Error: {exc}"
+        print(f"[GCS] sync error: {exc}")
+        return False, f"استخدام النسخة المحلية المؤقتة (خطأ: {exc})"
 
 
 # ============================================================
-# 3) Local indexes
+# 3) فهرسة الكتالوجات وصور المستودع بدون تسريب ذاكرة
 # ============================================================
 manual_pages = []
 part_images = []
@@ -243,26 +206,22 @@ def build_manual_index():
     pdf_files = sorted(BASE_DIR.rglob("*.pdf"))
     for pdf_path in pdf_files:
         try:
-            doc = fitz.open(pdf_path)
-            for page_num in range(len(doc)):
-                text = doc[page_num].get_text("text") or ""
-                text = text.strip()
-                if len(text) < 10:
-                    continue
+            with fitz.open(pdf_path) as doc:
+                for page_num in range(len(doc)):
+                    text = doc[page_num].get_text("text") or ""
+                    text = text.strip()
+                    if len(text) < 15:
+                        continue
 
-                filename = pdf_path.name
-                rel = str(pdf_path.relative_to(BASE_DIR))
-
-                manual_pages.append({
-                    "filename": filename,
-                    "relative_path": rel,
-                    "page": page_num + 1,
-                    "text": text,
-                    "norm": normalize_text(text),
-                })
-            doc.close()
+                    manual_pages.append({
+                        "filename": pdf_path.name,
+                        "relative_path": str(pdf_path.relative_to(BASE_DIR)),
+                        "page": page_num + 1,
+                        "text": text,
+                        "norm": normalize_text(text),
+                    })
         except Exception as exc:
-            print(f"[PDF] failed: {pdf_path}: {exc}")
+            print(f"[PDF] failed {pdf_path.name}: {exc}")
 
     print(f"[INDEX] PDF pages indexed: {len(manual_pages)}")
 
@@ -271,100 +230,94 @@ def build_image_index():
     part_images = []
 
     extensions = {".jpg", ".jpeg", ".png", ".webp"}
-    for p in IMAGE_DIR.rglob("*"):
-        if p.is_file() and p.suffix.lower() in extensions:
-            stem = p.stem
-            part_images.append({
-                "filename": p.name,
-                "relative_path": str(p.relative_to(IMAGE_DIR)),
-                "stem": stem,
-                "clean": clean_code(stem),
-                "path": str(p),
-            })
+    if IMAGE_DIR.exists():
+        for p in IMAGE_DIR.rglob("*"):
+            if p.is_file() and p.suffix.lower() in extensions:
+                part_images.append({
+                    "filename": p.name,
+                    "stem": p.stem,
+                    "clean": clean_code(p.stem),
+                    "path": str(p),
+                })
 
-    print(f"[INDEX] part images indexed: {len(part_images)}")
+    print(f"[INDEX] Part images indexed: {len(part_images)}")
 
 
 # ============================================================
-# 4) Deterministic local search
+# 4) محرك البحث الصارم والدقيق لمنع التخبط
 # ============================================================
-def score_page(page, query):
-    q_norm = normalize_text(query)
-    expanded = expand_query(query)
+def score_page(page, query, active_filters=None):
     text = page["norm"]
     filename = normalize_text(page["filename"])
-
     score = 0.0
 
-    # Exact phrase is highly valuable.
-    if q_norm and q_norm in text:
-        score += 20
+    # استبعاد الكتالوجات غير المعنية إذا تم تحديد ماكينة معينة
+    if active_filters:
+        if not any(flt in filename for flt in active_filters):
+            return 0.0
 
-    # Identifiers / part numbers.
-    for ident in extract_identifiers(query):
+    # 1. مطابقة الأكواد الصريحة والإنذارات
+    identifiers = extract_identifiers(query)
+    for ident in identifiers:
         c = clean_code(ident)
-        if c and c in clean_code(text):
-            score += 30
+        match_alarm = re.search(r"([a-z]+)0*(\d+)", c)
+        if match_alarm:
+            pref, num = match_alarm.groups()
+            pat = rf"\b{pref}\s*0*{num}\b"
+            if re.search(pat, text, re.I):
+                score += 50.0
+        elif c in clean_code(text):
+            score += 45.0
 
-    # Query tokens.
-    tokens = [t for t in re.findall(r"[a-zA-Z0-9\u0600-\u06FF]+", expanded)
-              if len(t) >= 3]
-    for token in tokens:
-        if token in text:
-            score += 2.5
-        if token in filename:
-            score += 5
-
-    # Machine-specific vocabulary.
-    for key, aliases in MACHINE_ALIASES.items():
-        if normalize_text(key) in q_norm:
-            for alias in aliases:
-                if normalize_text(alias) in text or normalize_text(alias) in filename:
-                    score += 4
-
-    # Error/alarm exactness.
-    for alarm in re.findall(r"\b(?:E|F|ALARM|ERROR)\s*0*\d+\b", query, re.I):
-        digits = re.search(r"\d+", alarm)
-        if digits:
-            n = int(digits.group())
-            patterns = [
-                rf"\bE0*{n}\b",
-                rf"\bF0*{n}\b",
-                rf"\balarm\s*0*{n}\b",
-                rf"\berror\s*0*{n}\b",
-            ]
-            if any(re.search(p, text, re.I) for p in patterns):
-                score += 35
+    # 2. مطابقة الكلمات المفتاحية بالترجمة الفنية المعتمدة
+    q_norm = normalize_text(query)
+    for ar_term, en_trans in ARABIC_ALIASES.items():
+        if ar_term in q_norm:
+            for w in en_trans.split():
+                if w in text:
+                    score += 4.0
+                if w in filename:
+                    score += 8.0
 
     return score
 
-def search_engine(query, top_k=8):
+def search_engine(query, top_k=6):
     if not query or not manual_pages:
         return []
 
+    q_norm = normalize_text(query)
+    active_filters = None
+    for m_key, filters in MACHINE_FILTERS.items():
+        if m_key in q_norm:
+            active_filters = filters
+            break
+
     scored = []
     for page in manual_pages:
-        s = score_page(page, query)
+        s = score_page(page, query, active_filters)
         if s > 0:
             scored.append((s, page))
+
+    if not scored and active_filters:
+        for page in manual_pages:
+            s = score_page(page, query, None)
+            if s > 0:
+                scored.append((s, page))
 
     scored.sort(key=lambda x: (-x[0], x[1]["filename"], x[1]["page"]))
     return [{"score": round(s, 2), **p} for s, p in scored[:top_k]]
 
 
 # ============================================================
-# 5) Part image matching
+# 5) مطابقة صورة القطعة مع أرشيف المستودع
 # ============================================================
 def find_image_for_part(query_text):
     if not query_text or not part_images:
         return None
 
-    identifiers = extract_identifiers(query_text)
-    candidates = identifiers + re.findall(
-        r"[A-Za-z0-9][A-Za-z0-9._-]{3,}", query_text
-    )
-
-    # Exact normalized code.
+    candidates = extract_identifiers(query_text)
+    
+    # مطابقة دقيقة للكود المنظف
     for candidate in candidates:
         c = clean_code(candidate)
         if len(c) < 3:
@@ -373,42 +326,39 @@ def find_image_for_part(query_text):
             if item["clean"] == c:
                 return item["path"]
 
-    # Containment for long part numbers.
+    # مطابقة الاحتواء للأرقام الرباعية
     for candidate in candidates:
         c = clean_code(candidate)
-        if len(c) < 6:
-            continue
-        for item in part_images:
-            if c in item["clean"] or item["clean"] in c:
-                return item["path"]
+        if len(c) >= 6:
+            for item in part_images:
+                if c in item["clean"] or item["clean"] in c:
+                    return item["path"]
 
-    # Fuzzy filename match.
-    query_clean = clean_code(" ".join(candidates))
-    if len(query_clean) >= 6:
-        best = None
-        for item in part_images:
-            ratio = difflib.SequenceMatcher(None, query_clean, item["clean"]).ratio()
-            if best is None or ratio > best[0]:
-                best = (ratio, item["path"])
-        if best and best[0] >= 0.78:
-            return best[1]
+    # مطابقة التشابه
+    for candidate in candidates:
+        c = clean_code(candidate)
+        if len(c) >= 5:
+            best_match = None
+            highest_ratio = 0.0
+            for item in part_images:
+                ratio = difflib.SequenceMatcher(None, c, item["clean"]).ratio()
+                if ratio > highest_ratio:
+                    highest_ratio = ratio
+                    best_match = item["path"]
+            if highest_ratio >= 0.82:
+                return best_match
 
     return None
 
 
 # ============================================================
-# 6) Gemini / Vertex AI multimodal analysis
+# 6) تكامل الذكاء الاصطناعي مع Gemini
 # ============================================================
 gemini_client = None
 
 def init_gemini():
     global gemini_client
-    if not GENAI_AVAILABLE:
-        print("[GEMINI] google-genai is not installed.")
-        return False
-
-    if not GOOGLE_CLOUD_PROJECT:
-        print("[GEMINI] GOOGLE_CLOUD_PROJECT is not configured.")
+    if not GENAI_AVAILABLE or not GOOGLE_CLOUD_PROJECT:
         return False
 
     try:
@@ -419,108 +369,72 @@ def init_gemini():
             location=GOOGLE_CLOUD_LOCATION,
             http_options=HttpOptions(api_version="v1"),
         )
-        print(f"[GEMINI] ready: {GEMINI_MODEL}")
+        print(f"[GEMINI] Connected successfully: {GEMINI_MODEL}")
         return True
     except Exception as exc:
-        print(f"[GEMINI] initialization failed: {exc}")
+        print(f"[GEMINI] Init error: {exc}")
         gemini_client = None
         return False
 
 def image_to_identification(pil_image, user_text=""):
-    """Use Gemini vision to read labels/part numbers and identify machine context."""
-    if pil_image is None:
-        return ""
-
-    if gemini_client is None:
+    if pil_image is None or gemini_client is None:
         return ""
 
     try:
         img = pil_image.convert("RGB")
         buf = io.BytesIO()
-        img.save(buf, format="JPEG", quality=92)
+        img.save(buf, format="JPEG", quality=90)
         image_part = Part.from_bytes(data=buf.getvalue(), mime_type="image/jpeg")
 
         prompt = """
-أنت مهندس صيانة صناعية متخصص في معدات مسالخ الدواجن.
-حلّل الصورة بهدف IDENTIFICATION وليس التخمين.
-
-أعد نصاً قصيراً يحتوي على:
-1) اسم/نوع القطعة الظاهر إن أمكن.
-2) الشركة المصنعة إن ظهرت.
-3) رقم القطعة Part Number / Item Number إن ظهر.
-4) Model / Type / Serial إن ظهر.
-5) رقم Alarm أو Error إن ظهر على الشاشة.
-6) اسم الماكينة المحتمل فقط إذا كان هناك دليل بصري واضح.
-7) كلمات إنجليزية فنية يمكن البحث بها داخل كتالوجات الصيانة.
-
-مهم جداً:
-- لا تخترع أي رقم غير ظاهر.
-- إذا كان النص غير مقروء اكتب "غير مقروء".
-- احتفظ بالأرقام والحروف كما تظهر في الصورة.
+أنت مهندس صيانة صناعية بمصنع دواجن عزيزا. استخرج بدقة تامة ما تراه في الصورة:
+1) رقم القطعة (Part Number / Article Code) بدقة تامة.
+2) كود الإنذار (Alarm / Error Code) إن ظهر على شاشة.
+3) الموديل أو الصانع (Meyn, Automac, Bitzer, Airpol, etc.).
+4) مصطلحات تقنية بالإنجليزية تفيد في البحث داخل الكتالوجات.
+هام: لا تؤلف أي رقم غير مقروء.
 """
         if user_text:
-            prompt += f"\nوصف الفني المرافق للصورة:\n{user_text}"
+            prompt += f"\nملاحظة الفني: {user_text}"
 
         response = gemini_client.models.generate_content(
             model=GEMINI_MODEL,
             contents=[prompt, image_part],
         )
         return (response.text or "").strip()
-
     except Exception as exc:
-        print(f"[GEMINI IMAGE] {exc}")
+        print(f"[GEMINI VISION] {exc}")
         return ""
 
 def generate_grounded_diagnosis(query, hits, image_identification=""):
-    """Generate a diagnosis strictly grounded in retrieved manual pages."""
-    if gemini_client is None:
-        return ""
-
-    if not hits:
+    if gemini_client is None or not hits:
         return ""
 
     context_blocks = []
-    for i, h in enumerate(hits[:8], start=1):
-        text = h["text"].replace("\x00", " ")
-        # Keep context bounded.
-        text = text[:3500]
+    for i, h in enumerate(hits[:5], start=1):
+        text_snip = h["text"][:1800].replace("\x00", " ")
         context_blocks.append(
-            f"[REFERENCE {i}]\n"
-            f"File: {h['filename']}\n"
-            f"Page: {h['page']}\n"
-            f"Content:\n{text}"
+            f"[مرجع {i}]: الملف {h['filename']} - صفحة {h['page']}\n{text_snip}"
         )
 
     context = "\n\n".join(context_blocks)
 
     prompt = f"""
-أنت مساعد صيانة هندسي لطاقم صيانة في مسلخ دواجن.
-مهمتك تحليل بلاغ الفني اعتماداً على المراجع المسترجعة فقط.
+أنت مهندس صيانة أول لمسلخ دواجن عزيزا. مهمتك صياغة تقرير عطل مباشر وعملي اعتماداً على نصوص الكتالوجات المرفقة فقط.
 
 بلاغ الفني:
 {query}
 
-تحليل الصورة إن وجد:
-{image_identification or "لا توجد صورة أو لم يتم التعرف عليها."}
+بيانات الصورة (إن وجدت):
+{image_identification or "لا توجد صورة مرفقة"}
 
-المراجع:
+النصوص المستخرجة من الكتالوجات:
 {context}
 
-التزم بالقواعد:
-- لا تدّعي أن معلومة موجودة في الكتالوج إذا لم تكن موجودة.
-- لا تخترع أرقام قطع أو قيم ضبط أو ضغوط أو درجات حرارة.
-- فرّق بوضوح بين "مذكور في المرجع" و"استنتاج تشخيصي".
-- أعط خطوات فحص عملية وآمنة، بدءاً من الفحوصات الأقل خطورة.
-- إذا كانت البيانات غير كافية، اذكر بالضبط ما يحتاجه الفني: موديل الماكينة، رقم الإنذار، صورة لوحة البيانات، قياس ضغط/حرارة، إلخ.
-- اربط كل معلومة مهمة باسم الملف ورقم الصفحة.
-- اكتب بالعربية المهنية الواضحة، مع إبقاء أسماء القطع والـ Part Numbers بالإنجليزية.
-
-صيغة الرد:
-### التشخيص المبدئي
-### خطوات الفحص
-### الإجراء المقترح
-### ما يحتاج إلى تحقق
-### المراجع
+الشروط:
+1. اذكر الحل وسبب العطل بناءً على الكتالوج المرفق دون أي اختراع.
+2. حدد أرقام الصفحات وأسماء الملفات بجانب كل إجراء مقترح.
+3. قدم خطوات فحص مرتبة وآمنة لطاقم الصيانة.
 """
     try:
         response = gemini_client.models.generate_content(
@@ -534,141 +448,104 @@ def generate_grounded_diagnosis(query, hits, image_identification=""):
 
 
 # ============================================================
-# 7) WhatsApp alert
+# 7) تنبيهات الواتساب عبر Green-API
 # ============================================================
 def send_whatsapp_alert(message):
-    if not (ID_INSTANCE and API_TOKEN_INSTANCE and ALERT_GROUP_ID):
+    token = API_TOKEN_INSTANCE or os.environ.get("GREEN_API_TOKEN", "")
+    if not (ID_INSTANCE and token and ALERT_GROUP_ID):
         return
 
-    url = f"https://api.green-api.com/waInstance{ID_INSTANCE}/sendMessage/{API_TOKEN_INSTANCE}"
+    url = f"https://api.green-api.com/waInstance{ID_INSTANCE}/sendMessage/{token}"
     try:
         requests.post(
             url,
             json={"chatId": ALERT_GROUP_ID, "message": message},
-            timeout=8,
+            timeout=5,
         )
     except Exception as exc:
         print(f"[WHATSAPP] {exc}")
 
 
 # ============================================================
-# 8) Main copilot
+# 8) تشغيل المساعد الهندسي
 # ============================================================
 def make_snippet(text, query):
-    text = text.replace("\r", " ").replace("\n", " ")
-    text = re.sub(r"\s+", " ", text).strip()
-
+    text = re.sub(r"\s+", " ", text.replace("\r", " ").replace("\n", " ")).strip()
     terms = extract_identifiers(query)
+    
     idx = -1
     for term in terms:
-        idx = text.lower().find(term.lower())
+        idx = text.lower().find(term.lower().split()[0])
         if idx >= 0:
             break
 
     if idx < 0:
-        q_words = [w for w in normalize_text(query).split() if len(w) >= 4]
-        for word in q_words:
-            idx = normalize_text(text).find(word)
-            if idx >= 0:
-                break
+        return text[:300] + "..."
 
-    if idx < 0:
-        return text[:500]
-
-    return text[max(0, idx - 180): min(len(text), idx + 520)]
+    start = max(0, idx - 100)
+    end = min(len(text), idx + 350)
+    return f"...{text[start:end]}..."
 
 def maintenance_copilot(query, input_image):
     query = (query or "").strip()
-
     if not query and input_image is None:
-        return (
-            "⚠️ أدخل وصف العطل أو رقم القطعة/الإنذار، أو ارفع صورة واضحة للقطعة.",
-            None,
-        )
+        return "⚠️ أدخل وصف العطل أو رقم القطعة/الإنذار، أو ارفع صورة واضحة للقطعة.", None
 
     image_identification = ""
+    extracted_from_image = []
+    
     if input_image is not None:
         image_identification = image_to_identification(input_image, query)
+        extracted_from_image = extract_identifiers(image_identification)
 
-    combined_query = "\n".join(x for x in [query, image_identification] if x)
-    hits = search_engine(combined_query, top_k=8)
+    search_query = query
+    if not search_query and extracted_from_image:
+        search_query = extracted_from_image[0]
 
-    matched_image = find_image_for_part(combined_query)
-
-    # If Gemini identified a code but local search missed it, search each identifier separately.
-    if not hits:
-        for ident in extract_identifiers(image_identification):
-            hits = search_engine(ident, top_k=8)
-            if hits:
-                break
+    hits = search_engine(search_query, top_k=6)
+    
+    matched_image = find_image_for_part(query)
+    if not matched_image and extracted_from_image:
+        matched_image = find_image_for_part(" ".join(extracted_from_image))
 
     diagnosis = generate_grounded_diagnosis(
-        query or "استفسار من صورة",
+        query or search_query,
         hits,
-        image_identification=image_identification,
+        image_identification=image_identification
     )
 
     response = []
 
     if image_identification:
-        response.append("### 🔎 قراءة الصورة بالذكاء الاصطناعي")
+        response.append("### 🔎 تحليل وقراءة الصورة بالذكاء الاصطناعي")
         response.append(image_identification)
 
     if hits:
-        response.append("\n### 📚 المراجع التي تم العثور عليها")
-        for h in hits[:6]:
-            response.append(
-                f"- **{h['filename']} — صفحة {h['page']}** "
-                f"(درجة المطابقة {h['score']})"
-            )
-            response.append(f"  > {make_snippet(h['text'], combined_query)}")
-
+        response.append("\n### 📚 المراجع الهندسية المطابقة من الكتالوجات")
+        for h in hits[:5]:
+            response.append(f"- **{h['filename']} — صفحة {h['page']}** (درجة المطابقة: {h['score']})")
+            response.append(f"  > {make_snippet(h['text'], search_query)}")
     else:
-        response.append(
-            "\n### ❌ لم يتم العثور على مرجع مطابق في الكتالوجات المحلية."
-        )
-        response.append(
-            "جرّب إضافة **Model / Part Number / Alarm Code** أو صورة لوحة البيانات."
-        )
+        response.append("\n### ❌ لم يتم العثور على مراجع مطابقة في الكتالوجات المفهرسة.")
+        response.append("تأكد من كتابة كود الإنذار (مثل `E002`) أو رقم القطعة بدقة.")
 
     if diagnosis:
-        response.append("\n---\n")
-        response.append(diagnosis)
+        response.append("\n---\n### 🛠️ تقرير الصيانة والإجراء المقترح\n" + diagnosis)
 
-    if matched_image:
-        response.append(
-            "\n### 🖼️ صورة القطعة من أرشيف المستودع"
-        )
-    else:
-        if input_image is not None:
-            response.append(
-                "\nℹ️ لم يتم العثور على صورة أرشيفية مطابقة. "
-                "الصورة المرفوعة استُخدمت للتعرّف على رقم/نوع القطعة، "
-                "لكن لا يوجد تطابق موثوق في أرشيف الصور."
-            )
-
-    # WhatsApp alert only for actual fault reports.
-    fault_words = [
-        "عطل", "مشكلة", "مشكله", "انذار", "إنذار", "تالف",
-        "كسر", "توقف", "متوقف", "alarm", "error", "fault", "stop"
-    ]
+    fault_words = ["عطل", "مشكلة", "مشكله", "انذار", "إنذار", "تالف", "كسر", "alarm", "error", "fault"]
     if any(w in normalize_text(query) for w in fault_words):
         tz = pytz.timezone("Asia/Hebron")
         timestamp = datetime.now(tz).strftime("%Y-%m-%d %I:%M %p")
-        alert = (
-            f"⚠️ بلاغ صيانة ميداني\n"
-            f"الوقت: {timestamp}\n"
-            f"البلاغ: {query}\n"
-        )
+        alert = f"⚠️ *بلاغ صيانة ميداني*\n⏰ {timestamp}\n📝 *الطلب:* {query}\n"
         if hits:
-            alert += f"المرجع: {hits[0]['filename']} صفحة {hits[0]['page']}"
+            alert += f"📖 *المرجع:* {hits[0]['filename']} (صفحة {hits[0]['page']})"
         send_whatsapp_alert(alert)
 
     return "\n".join(response), matched_image
 
 
 # ============================================================
-# 9) Startup
+# 9) تشغيل الواجهة والشعار المعتمد
 # ============================================================
 sync_ok, sync_message = sync_data_from_gcs()
 build_manual_index()
@@ -689,30 +566,19 @@ for candidate in [Path("logo.png"), Path("/app/logo.png"), BASE_DIR / "logo.png"
             pass
 
 logo_html = (
-    f'<img src="data:image/png;base64,{logo_base64}" '
-    'style="width:100%;height:100%;object-fit:contain;">'
+    f'<img src="data:image/png;base64,{logo_base64}" style="width:100%;height:100%;object-fit:contain;">'
     if logo_base64
-    else '<span style="font-size:20px;font-weight:900;color:#1b5e20;">عزيزا</span>'
+    else '<span style="font-size:22px;font-weight:900;color:#1b5e20;">عزيزا</span>'
 )
 
 HEADER_HTML = f"""
-<div style="background:linear-gradient(135deg,#0b3d20 0%,#1b5e20 100%);
-padding:18px 25px;border-radius:14px;color:white;margin-bottom:20px;
-box-shadow:0 4px 15px rgba(0,0,0,.18);direction:rtl;text-align:right;
-border-bottom:4px solid #ffcc00;">
-<div style="display:flex;align-items:center;justify-content:space-between;
-flex-wrap:wrap;gap:15px;">
+<div style="background:linear-gradient(135deg,#0b3d20 0%,#1b5e20 100%);padding:18px 25px;border-radius:14px;color:white;margin-bottom:20px;box-shadow:0 4px 15px rgba(0,0,0,.18);direction:rtl;text-align:right;border-bottom:4px solid #ffcc00;">
+<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:15px;">
 <div style="display:flex;align-items:center;gap:20px;">
-<div style="background:#fff;border-radius:50%;padding:4px;
-display:flex;align-items:center;justify-content:center;width:85px;height:85px;
-border:3px solid #ffcc00;overflow:hidden;">{logo_html}</div>
+<div style="background:#fff;border-radius:50%;padding:4px;display:flex;align-items:center;justify-content:center;width:85px;height:85px;border:3px solid #ffcc00;overflow:hidden;">{logo_html}</div>
 <div>
-<h1 style="margin:0;font-size:23px;font-weight:800;color:#fff;">
-شركة دواجن فلسطين - مسلخ عزيزا
-</h1>
-<p style="margin:4px 0 0;font-size:14px;color:#e8f5e9;">
-مساعد الصيانة الهندسي الذكي — Meyn • Automac • Fabbri • التبريد • الضواغط
-</p>
+<h1 style="margin:0;font-size:23px;font-weight:800;color:#fff;">شركة دواجن فلسطين - مسلخ عزيزا</h1>
+<p style="margin:4px 0 0;font-size:14px;color:#e8f5e9;">مساعد الصيانة الهندسي الذكي — Meyn • Automac • Fabbri • التبريد والضواغط</p>
 </div>
 </div>
 <div style="border-right:2px solid rgba(255,255,255,.25);padding-right:20px;">
@@ -725,9 +591,8 @@ border:3px solid #ffcc00;overflow:hidden;">{logo_html}</div>
 """
 
 STATUS = (
-    f"📊 **حالة النظام:** {TOTAL_PDFS} كتالوجات، {TOTAL_PAGES} صفحة مفهرسة، "
-    f"{TOTAL_IMAGES} صورة قطعة. "
-    f"Gemini: {'متصل ✅' if gemini_ok else 'غير متصل ⚠️'}"
+    f"📊 **حالة النظام:** مفهرس `{TOTAL_PDFS}` كتالوجات ({TOTAL_PAGES} صفحة)، و `{TOTAL_IMAGES}` صورة قطعة. "
+    f"الذكاء الاصطناعي: {'متصل ومفعّل ✅' if gemini_ok else 'محلي فقط ⚠️'}"
 )
 
 with gr.Blocks(title="مساعد الصيانة الهندسي - مسلخ عزيزا") as demo:
@@ -737,13 +602,9 @@ with gr.Blocks(title="مساعد الصيانة الهندسي - مسلخ عزي
     with gr.Row():
         with gr.Column(scale=1):
             query_input = gr.Textbox(
-                label="وصف العطل / رقم القطعة / Alarm / Model",
-                placeholder=(
-                    "مثال: ماكينة التغليف تتوقف ويظهر E002\n"
-                    "أو: 0990.AD05.007.00\n"
-                    "أو: الضاغط ضغط الزيت منخفض"
-                ),
-                lines=4,
+                label="وصف العطل / رقم القطعة (4 مقاطع) / كود الإنذار",
+                placeholder="أمثلة: انذار ماكينة التغليف E002 | مشكله ماكينه المايسترو | 0990.AD05.007.00 | 89 3608 904 0096",
+                lines=3,
             )
             image_input = gr.Image(
                 type="pil",
@@ -751,17 +612,14 @@ with gr.Blocks(title="مساعد الصيانة الهندسي - مسلخ عزي
             )
 
             with gr.Row():
-                submit_btn = gr.Button(
-                    "🔍 فحص وتشخيص ومطابقة",
-                    variant="primary",
-                )
+                submit_btn = gr.Button("🔍 فحص وتشخيص ومطابقة", variant="primary")
                 clear_btn = gr.Button("مسح")
 
         with gr.Column(scale=1):
             output_box = gr.Markdown()
             matched_img_output = gr.Image(
                 type="filepath",
-                label="🖼️ صورة القطعة المطابقة من الأرشيف",
+                label="🖼️ صورة القطعة المطابقة من المستودع",
             )
 
     submit_btn.click(
@@ -775,7 +633,6 @@ with gr.Blocks(title="مساعد الصيانة الهندسي - مسلخ عزي
         inputs=[],
         outputs=[query_input, image_input, output_box, matched_img_output],
     )
-
 
 if __name__ == "__main__":
     demo.launch(
