@@ -50,19 +50,38 @@ sync_data_from_gcs()
 # ==========================================
 # 1. إعدادات تنبيهات الصيانة عبر الواتساب (Green-API)
 # ==========================================
+from datetime import datetime
+import pytz
+import requests
+
+# إعدادات Green-API والبيانات الخاصة بك
 ID_INSTANCE = "710722737613"
-API_TOKEN_INSTANCE = "8902219901b2411cb1ebfa944bbfc3d7d499d671111c4fe18e"
-ALERT_RECIPIENT_ID = "970599431267@c.us"
+API_TOKEN = "8902219901b2411cb1ebfa944bbfc3d7d499d671111c4fe18e"
+MY_PHONE = "970599431267"
 
-def send_whatsapp_alert(message):
-    """إرسال إشعار فوري للرقم الشخصي عند رصد عطل أو طلب قطعة"""
-    url = f"https://api.green-api.com/waInstance{ID_INSTANCE}/sendMessage/{API_TOKEN_INSTANCE}"
-    payload = {"chatId": ALERT_RECIPIENT_ID, "message": message}
+
+def send_whatsapp_alert(query_text, info_summary):
     try:
-        requests.post(url, json=payload, timeout=5)
-    except Exception as err:
-        print(f"[!] WhatsApp notification error: {err}")
+        url = f"https://7107.api.greenapi.com/waInstance{ID_INSTANCE}/sendMessage/{API_TOKEN}"
+        local_tz = pytz.timezone("Asia/Gaza")
+        now_str = datetime.now(local_tz).strftime("%I:%M %p")
 
+        payload = {
+            "chatId": f"{MY_PHONE}@c.us",
+            "message": (
+                f"🏭 *مسلخ شركة دواجن فلسطين - استفسار صيانة*\n"
+                f"⏰ الوقت: {now_str}\n"
+                f"🔍 الاستفسار: {query_text}\n"
+                f"📋 النتيجة: {info_summary}"
+            ),
+        }
+
+        # تنفيذ الإرسال
+        response = requests.post(url, json=payload, timeout=5)
+        return response.json()
+
+    except Exception as err:
+        print(f"[!] خطأ في إرسال إشعار الواتساب: {err}")
 # ==========================================
 # 2. تحميل النماذج وفهرسة الكتالوجات والمستودع
 # ==========================================
