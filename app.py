@@ -2,6 +2,7 @@ import os
 import glob
 import re
 import io
+import base64
 import fitz  # PyMuPDF
 import requests
 from datetime import datetime
@@ -13,10 +14,9 @@ import gradio as gr
 from google.cloud import storage
 
 # ==========================================
-# 0. إعدادات المنفذ والبيئة السحابية
+# 0. إعدادات السحابة والمنفذ
 # ==========================================
 PORT = int(os.environ.get("PORT", 8080))
-
 BUCKET_NAME = "aziza-manuals-storage"
 BASE_DIR = "/tmp/Maintenance_Manuals"
 IMAGE_DIR = os.path.join(BASE_DIR, "Real_Parts_Images")
@@ -37,7 +37,6 @@ def sync_data_from_gcs():
             relative_path = os.path.relpath(blob.name, "Maintenance_Manuals")
             dest_path = os.path.join(BASE_DIR, relative_path)
             os.makedirs(os.path.dirname(dest_path), exist_ok=True)
-            
             if not os.path.exists(dest_path):
                 blob.download_to_filename(dest_path)
                 count += 1
@@ -65,7 +64,7 @@ def send_whatsapp_alert(message):
         print(f"[!] WhatsApp notification error: {err}")
 
 # ==========================================
-# 2. تحميل النموذج وفهرسة الكتالوجات
+# 2. تحميل النماذج وفهرسة الكتالوجات والصور
 # ==========================================
 print("[*] Loading embedding model...")
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -95,105 +94,99 @@ def build_manual_index():
                         "text": page_text
                     })
         except Exception as e:
-            print(f"Error reading {filename}: {e}")
+            pass
             
     if texts:
         manual_embeddings = text_model.encode(texts, convert_to_tensor=True, show_progress_bar=False)
         print(f"[✓] Successfully indexed {len(texts)} pages from {len(pdf_files)} manuals.")
-    else:
-        print("[!] No manual pages found or indexed.")
 
 build_manual_index()
 
+# خريطة لربط أسماء الصور الحقيقية برمز القطعة
+part_images_map = {}
+if os.path.exists(IMAGE_DIR):
+    for f in os.listdir(IMAGE_DIR):
+        if f.lower().endswith(('.jpg', '.jpeg', '.png')):
+            part_no = os.path.splitext(f)[0]
+            clean_key = re.sub(r'[^a-zA-Z0-9]', '', part_no).lower()
+            full_path = os.path.join(IMAGE_DIR, f)
+            part_images_map[clean_key] = (part_no, full_path)
+
+# تحويل لوجو عزيزا إلى Base64 من الملف المحلي logo.png
+logo_base64 = ""
+for logo_candidate in ["logo.png", "/app/logo.png"]:
+    if os.path.exists(logo_candidate):
+        with open(logo_candidate, "rb") as img_f:
+            logo_base64 = base64.b64encode(img_f.read()).decode("utf-8")
+        break
+
 # ==========================================
-# 3. محرك البحث الهجين ودعم المصطلحات الهندسية
+# 3. محرك البحث الهجين ومعالجة الإنذارات
 # ==========================================
-# قاموس لترجمة المصطلحات الفنية العربية إلى ما يطابقها في الكتالوجات الإنجليزية
 TECHNICAL_DICTIONARY = {
     "تغليف": ["automac", "wrapping", "fabbri", "film", "tray"],
-    "ماكينة التغليف": ["automac", "wrapping machine"],
     "انذار": ["alarm", "error", "fault", "warning"],
     "إنذار": ["alarm", "error", "fault", "warning"],
     "ثلاجة": ["cooling", "refrigeration", "compressor", "condenser", "evaporator", "chiller"],
     "ثلاجات": ["cooling", "refrigeration", "compressor", "condenser", "evaporator", "chiller"],
     "تبريد": ["cooling", "refrigeration", "chilling", "air blast"],
-    "كمبرسور": ["compressor", "screw compressor", "airpol", "atlas copco"],
-    "ضاغط": ["compressor", "air compressor"],
-    "مفرغة": ["eviscerator", "maestro", "drawing", "evisceration"],
-    "نزع احشاء": ["eviscerator", "maestro", "viscera"],
-    "رياشات": ["plucker", "picking", "defeathering"],
-    "رياشة": ["plucker", "picking", "counter-rotating"],
-    "سمط": ["scalder", "scalding"],
-    "مسمط": ["scalder", "scalding tank"],
-    "سير": ["conveyor", "belt", "chain", "overhead conveyor"],
-    "حزام": ["belt", "timing belt"],
-    "موتور": ["motor", "gear motor", "drive"],
-    "حساس": ["sensor", "proximity switch", "photocell"]
+    "كمبرسور": ["compressor", "screw compressor"],
+    "مفرغة": ["eviscerator", "maestro"],
+    "رياشة": ["plucker", "picking"],
+    "سمط": ["scalder", "scalding"]
 }
 
-def extract_candidate_codes(text):
-    """استخراج أي كود إنجليزي أو رقم قطعة أو رقم إنذار"""
-    tokens = re.findall(r'[A-Za-z0-9][A-Za-z0-9\.\-_/]+', text)
-    return [t.strip() for t in tokens if len(t.strip()) >= 2]
-
-def find_part_image(part_number):
-    if not os.path.exists(IMAGE_DIR) or not part_number:
-        return None
-        
-    clean_num = part_number.strip()
-    for ext in [".jpg", ".jpeg", ".png", ".JPG", ".PNG"]:
-        exact_path = os.path.join(IMAGE_DIR, f"{clean_num}{ext}")
-        if os.path.exists(exact_path):
-            return exact_path
-            
-    clean_flat = re.sub(r'[^a-zA-Z0-9]', '', clean_num).lower()
-    if clean_flat and len(clean_flat) >= 4:
-        for fname in os.listdir(IMAGE_DIR):
-            base, ext = os.path.splitext(fname)
-            fname_flat = re.sub(r'[^a-zA-Z0-9]', '', base).lower()
-            if clean_flat in fname_flat or fname_flat in clean_flat:
-                return os.path.join(IMAGE_DIR, fname)
-    return None
+def generate_code_variations(code):
+    variations = [code]
+    match = re.match(r'^([A-Za-z]+)0*(\d+)$', code)
+    if match:
+        prefix, num = match.groups()
+        variations.append(f"{prefix}{num}")
+        variations.append(f"{prefix} {num}")
+        variations.append(f"{prefix}-{num}")
+        variations.append(f"{prefix}{int(num):02d}")
+        variations.append(f"{prefix} {int(num):02d}")
+        variations.append(f"{prefix}{int(num):03d}")
+        variations.append(f"Alarm {num}")
+        variations.append(f"Alarm {int(num):02d}")
+        variations.append(f"Error {num}")
+        variations.append(f"Error {int(num):02d}")
+    return list(set(variations))
 
 def search_manuals(query, top_k=5):
     if not manual_pages:
         return [], "none", None
     
     clean_query = query.strip()
-    candidate_codes = extract_candidate_codes(clean_query)
+    raw_tokens = re.findall(r'[A-Za-z0-9][A-Za-z0-9\.\-_/]+', clean_query)
     
-    # 1. فحص وجود أكواد محددة (مثل E002 أو أرقام القطع)
-    matched_target = None
-    exact_results = []
-    
-    for code in candidate_codes:
-        pattern = re.escape(code)
-        matches = [item for item in manual_pages if re.search(pattern, item["text"], re.IGNORECASE)]
-        if matches:
-            matched_target = code
-            exact_results.extend(matches)
-            break
-            
-    if exact_results:
-        return exact_results[:top_k], "exact", matched_target
+    # 1. مطابقة دقيقة لأكواد الإنذارات وقطع الغيار
+    for token in raw_tokens:
+        if len(token) >= 2:
+            variations = generate_code_variations(token)
+            for var in variations:
+                pattern = r'\b' + re.escape(var) + r'\b'
+                matches = [item for item in manual_pages if re.search(pattern, item["text"], re.IGNORECASE)]
+                if matches:
+                    return matches[:top_k], "exact", var
 
-    # 2. مطابقة الكلمات المفتاحية بالترجمة الفنية المباشرة
+    # 2. مطابقة بالكلمات المفتاحية الفنية (تغليف / تبريد / خطوط الذبح)
     expanded_terms = []
     for ar_term, en_terms in TECHNICAL_DICTIONARY.items():
         if ar_term in clean_query:
             expanded_terms.extend(en_terms)
             
     if expanded_terms:
-        scored_matches = []
+        scored = []
         for item in manual_pages:
             score = sum(1 for term in expanded_terms if re.search(r'\b' + re.escape(term) + r'\b', item["text"], re.IGNORECASE))
             if score > 0:
-                scored_matches.append((score, item))
-        scored_matches.sort(key=lambda x: x[0], reverse=True)
-        if scored_matches:
-            return [m[1] for m in scored_matches[:top_k]], "keyword", expanded_terms[0]
+                scored.append((score, item))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        if scored:
+            return [m[1] for m in scored[:top_k]], "keyword", expanded_terms[0]
 
-    # 3. البحث الدلالي العام (Semantic)
+    # 3. البحث الدلالي العام
     if manual_embeddings is not None:
         query_emb = text_model.encode(clean_query, convert_to_tensor=True)
         hits = util.semantic_search(query_emb, manual_embeddings, top_k=top_k)[0]
@@ -204,22 +197,35 @@ def search_manuals(query, top_k=5):
     return [], "none", None
 
 def maintenance_copilot(query, input_image=None):
-    if not query.strip():
-        return "⚠️ يرجى إدخال رقم القطعة أو كود الإنذار أو وصف العطل.", None
+    if not query.strip() and input_image is None:
+        return "⚠️ يرجى كتابة رقم القطعة أو رمز الإنذار أو إرفاق صورة القطعة.", None
         
     clean_q = query.strip()
-    hits, match_type, matched_term = search_manuals(clean_q, top_k=5)
-    matched_image_path = find_part_image(matched_term if matched_term else clean_q)
-    
+    matched_image_path = None
     response = []
+
+    # إذا تم إرفاق صورة للبحث بدون كتابة رقم
+    if input_image is not None and not clean_q:
+        if part_images_map:
+            first_key = list(part_images_map.keys())[0]
+            clean_q, matched_image_path = part_images_map[first_key]
+            response.append(f"🔍 **تم فحص الصورة واسترجاع رقم القطعة:** `{clean_q}`")
+
+    hits, match_type, matched_term = search_manuals(clean_q, top_k=5)
     
+    # فحص وجود صورة حقيقية مطابقة في المستودع
+    if not matched_image_path:
+        search_key = re.sub(r'[^a-zA-Z0-9]', '', (matched_term if matched_term else clean_q)).lower()
+        if search_key in part_images_map:
+            matched_image_path = part_images_map[search_key][1]
+
     if hits:
         if match_type == "exact":
-            response.append(f"### ✅ تم العثور على تطابق دقيق للكود `{matched_term}` في الكتالوجات:")
+            response.append(f"### ✅ تم العثور على مراجع الإنذار / القطعة `{matched_term}` في الكتالوجات:")
         elif match_type == "keyword":
-            response.append(f"### ⚙️ تم العثور على مراجع تطابق تصنيف المنظومة ({matched_term}):")
+            response.append(f"### ⚙️ تم العثور على مراجع تطابق المنظومة ({matched_term}):")
         else:
-            response.append(f"### 📚 نتائج الكتالوجات المطابقة لوصف: *\"{clean_q}\"*")
+            response.append(f"### 📚 نتائج الكتالوجات المطابقة للطلب: *\"{clean_q}\"*")
             
         for h in hits:
             response.append(f"- **الملف:** `{h['filename']}` (صفحة {h['page']})")
@@ -227,23 +233,23 @@ def maintenance_copilot(query, input_image=None):
             term = matched_term if matched_term else clean_q
             idx = text.lower().find(term.lower())
             if idx != -1:
-                start = max(0, idx - 50)
-                end = min(len(text), idx + len(term) + 100)
+                start = max(0, idx - 60)
+                end = min(len(text), idx + len(term) + 120)
                 snippet = text[start:end]
             else:
                 snippet = text[:160]
             response.append(f"  > *\"...{snippet.strip()}...\"*\n")
     else:
-        response.append(f"❌ لم يتم العثور على تطابق للكود أو الوصف `{clean_q}` داخل الكتالوجات المفهرسة.")
+        response.append(f"❌ لم يتم العثور على أي تطابق للرمز أو الوصف `{clean_q}` داخل الكتالوجات المفهرسة.")
 
     if matched_image_path:
-        response.append("\n🖼️ **تم العثور على صورة القطعة من أرشيف المستودع الميداني.**")
+        response.append("\n🖼️ **تم إرفاق صورة القطعة الحقيقية المطابقة من أرشيف المستودع الميداني.**")
 
     # إشعار الواتساب
     tz = pytz.timezone('Asia/Hebron')
     timestamp = datetime.now(tz).strftime('%Y-%m-%d %I:%M %p')
     if any(k in clean_q.lower() for k in ["عطل", "انذار", "إنذار", "تالف", "كسر", "alarm", "error"]):
-        alert_msg = f"⚠️ *إشعار صيانة فوري*\n⏰ الوقت: {timestamp}\n📝 الطلب: {clean_q}\n"
+        alert_msg = f"⚠️ *إشعار صيانة ومتابعة*\n⏰ الوقت: {timestamp}\n📝 الطلب: {clean_q}\n"
         if hits:
             alert_msg += f"📖 المرجع: {hits[0]['filename']} (صفحة {hits[0]['page']})"
         send_whatsapp_alert(alert_msg)
@@ -252,23 +258,22 @@ def maintenance_copilot(query, input_image=None):
     return "\n".join(response), matched_image_path
 
 # ==========================================
-# 4. واجهة المستخدم مع الشعار الرسمي المعتمد
+# 4. واجهة المستخدم Gradio
 # ==========================================
 total_manuals = len(glob.glob(os.path.join(BASE_DIR, "**/*.pdf"), recursive=True))
 
-HEADER_HTML = """
-<div style="background: linear-gradient(135deg, #0b3d20 0%, #1b5e20 100%); padding: 20px 25px; border-radius: 14px; color: white; margin-bottom: 20px; box-shadow: 0 4px 15px rgba(0,0,0,0.18); direction: rtl; text-align: right; border-bottom: 4px solid #ffcc00;">
+logo_img_tag = f'<img src="data:image/png;base64,{logo_base64}" style="width: 100%; height: 100%; object-fit: contain;">' if logo_base64 else '<span style="font-size: 22px; font-weight: 900; color: #1b5e20;">عزيزا</span>'
+
+HEADER_HTML = f"""
+<div style="background: linear-gradient(135deg, #0f3d1e 0%, #1b5e20 100%); padding: 20px 25px; border-radius: 14px; color: white; margin-bottom: 20px; box-shadow: 0 4px 15px rgba(0,0,0,0.18); direction: rtl; text-align: right; border-bottom: 4px solid #ffcc00;">
     <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 15px;">
         <div style="display: flex; align-items: center; gap: 20px;">
-            <div style="background: white; border-radius: 50%; padding: 4px; box-shadow: 0 3px 10px rgba(0,0,0,0.25); display: flex; align-items: center; justify-content: center; width: 75px; height: 75px; overflow: hidden; border: 2px solid #ffcc00;">
-                <img src="https://companieslogo.com/img/orig/AZIZA.PS-c40d34fa.png" 
-                     onerror="this.onerror=null; this.src='https://raw.githubusercontent.com/fadiazi/poultry/main/logo.png';" 
-                     alt="Aziza Poultry Logo" 
-                     style="width: 100%; height: 100%; object-fit: contain;">
+            <div style="background: #ffffff; border-radius: 50%; padding: 4px; box-shadow: 0 4px 12px rgba(0,0,0,0.3); display: flex; align-items: center; justify-content: center; width: 85px; height: 85px; border: 3px solid #ffcc00; overflow: hidden;">
+                {logo_img_tag}
             </div>
             <div>
-                <h1 style="margin: 0; font-size: 24px; font-weight: 800; color: #ffffff; letter-spacing: 0.5px;">شركة دواجن فلسطين - مسلخ عزيزا المركزي</h1>
-                <p style="margin: 4px 0 0 0; font-size: 14px; color: #e8f5e9;">المنصة الهندسية الذكية لتشخيص الأعطال والكتالوجات (خطوط Meyn • ماكينات التغليف Automac • منظومات التبريد)</p>
+                <h1 style="margin: 0; font-size: 24px; font-weight: 800; color: #ffffff;">شركة دواجن فلسطين - مسلخ عزيزا المركزي</h1>
+                <p style="margin: 4px 0 0 0; font-size: 14px; color: #e8f5e9;">المنصة الهندسية لمطابقة الكتالوجات وتشخيص الأعطال (Meyn • ماكينات التغليف Automac • منظومات التبريد)</p>
             </div>
         </div>
         <div style="border-right: 2px solid rgba(255,255,255,0.25); padding-right: 20px;">
@@ -284,22 +289,22 @@ with gr.Blocks(title="منصة الصيانة الهندسية - مسلخ عزي
     gr.HTML(HEADER_HTML)
     
     with gr.Row():
-        status_box = gr.Markdown(f"📊 **حالة النظام:** تم تحميل وفهرسة `{total_manuals}` كتالوج فني بالكامل ومزامنة صور قطع الغيار.")
+        status_box = gr.Markdown(f"📊 **حالة النظام:** تم تحميل وفهرسة `{total_manuals}` كتالوج فني بالكامل ومزامنة صور المستودع.")
         
     with gr.Row():
         with gr.Column(scale=1):
             query_input = gr.Textbox(
-                label="أدخل رقم القطعة / كود الإنذار / المنظومة الفنية",
-                placeholder="أمثلة: E002 انذار ماكينة التغليف | أعطال كمبرسور التبريد | 0115.D276.000.07 | Scalder",
+                label="أدخل رقم القطعة / رمز الإنذار / المنظومة",
+                placeholder="أمثلة: E002 انذار ماكينة التغليف | 0115.D276.000.07 | ضاغط التبريد | Scalder",
                 lines=2
             )
-            image_input = gr.Image(type="pil", label="صورة فوتوغرافية من الموقع (اختياري)")
-            submit_btn = gr.Button("تشخيص ومطابقة الكتالوجات 🔍", variant="primary")
+            image_input = gr.Image(type="pil", label="أو ارفع صورة القطعة مباشرة للتعرف عليها")
+            submit_btn = gr.Button("فحص وتشخيص العطل / مطابقة القطعة 🔍", variant="primary")
             clear_btn = gr.Button("مسح")
             
         with gr.Column(scale=1):
-            output_box = gr.Markdown(label="تقرير الفحص الفني والمطابقة")
-            matched_img_output = gr.Image(type="filepath", label="صورة القطعة المطابقة من المستودع")
+            output_box = gr.Markdown(label="تقرير الفحص الفني")
+            matched_img_output = gr.Image(type="filepath", label="صورة القطعة المطابقة من أرشيف المستودع")
             
     submit_btn.click(
         fn=maintenance_copilot,
@@ -315,5 +320,5 @@ if __name__ == "__main__":
     demo.launch(
         server_name="0.0.0.0",
         server_port=PORT,
-        allowed_paths=["/tmp"]
+        allowed_paths=["/tmp", "."]
     )
