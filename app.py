@@ -7,8 +7,7 @@ import fitz  # PyMuPDF
 import requests
 from datetime import datetime
 import pytz
-from PIL import Image
-import imagehash
+from PIL import Image, ImageStat
 import gradio as gr
 from google.cloud import storage
 
@@ -54,17 +53,14 @@ ALERT_GROUP_ID = os.environ.get("ALERT_GROUP_ID", "YOUR_PHONE_OR_GROUP_HERE")
 
 def send_whatsapp_alert(message):
     if not API_TOKEN_INSTANCE or "YOUR_GREEN_API" in API_TOKEN_INSTANCE:
-        print("[!] WhatsApp alert skipped: API Token is not set.")
         return
     if not ALERT_GROUP_ID or "YOUR_PHONE" in ALERT_GROUP_ID:
-        print("[!] WhatsApp alert skipped: ALERT_GROUP_ID is not set.")
         return
 
     url = f"https://api.green-api.com/waInstance{ID_INSTANCE}/sendMessage/{API_TOKEN_INSTANCE}"
     payload = {"chatId": ALERT_GROUP_ID, "message": message}
     try:
-        res = requests.post(url, json=payload, timeout=5)
-        print(f"[*] WhatsApp API response: {res.status_code}")
+        requests.post(url, json=payload, timeout=5)
     except Exception as err:
         print(f"[!] WhatsApp notification error: {err}")
 
@@ -96,14 +92,22 @@ def build_manual_index():
 
 build_manual_index()
 
-# بناء فهرس بصري خفيف وسريع للصور باستخدام Image Hashing
-image_hashes = {}
+# فهرسة الصور بصرياً باستخدام توقيع البكسلات المصغرة (Thumbnail Signature)
+# طريقة خفيفة وسريعة ولا تستهلك رام إطلاقاً
 part_images_map = {}
+image_signatures = {}
 
-def build_image_hash_index():
-    global image_hashes, part_images_map
-    image_hashes = {}
+def get_img_sig(img):
+    """استخراج بصمة بصرية سريعة من 64 بكسل مع تباين الإضاءة"""
+    img_gray = img.convert('L').resize((16, 16), Image.Resampling.BILINEAR)
+    pixels = list(img_gray.getdata())
+    avg = sum(pixels) / len(pixels)
+    return [1 if p > avg else 0 for p in pixels]
+
+def build_image_index():
+    global part_images_map, image_signatures
     part_images_map = {}
+    image_signatures = {}
     if not os.path.exists(IMAGE_DIR):
         return
     valid_exts = ('.jpg', '.jpeg', '.png', '.JPG', '.PNG')
@@ -114,14 +118,13 @@ def build_image_hash_index():
             img_path = os.path.join(IMAGE_DIR, f)
             part_images_map[clean_k] = (part_no, img_path)
             try:
-                with Image.open(img_path) as img:
-                    h = imagehash.dhash(img.convert('RGB'))
-                    image_hashes[part_no] = (h, img_path)
+                with Image.open(img_path) as im:
+                    image_signatures[part_no] = (get_img_sig(im), img_path)
             except Exception:
                 pass
-    print(f"[✓] Indexed {len(image_hashes)} parts with visual hashes.")
+    print(f"[✓] Indexed {len(image_signatures)} part images for visual comparison.")
 
-build_image_hash_index()
+build_image_index()
 
 # قراءة الشعار المحلي المعتمد logo.png
 logo_base64 = ""
@@ -137,31 +140,33 @@ for p in ["logo.png", "/app/logo.png"]:
 # ==========================================
 # 3. محرك المطابقة البصرية والبحث الصارم
 # ==========================================
-def match_uploaded_image(uploaded_pil_img, max_distance=12):
-    """مقارنة بصمة الصورة المرفوعة مع صور المستودع الميداني"""
-    if uploaded_pil_img is None or not image_hashes:
+def match_uploaded_image(uploaded_img):
+    """مقارنة الصورة المرفوعة مع صور المستودع"""
+    if uploaded_img is None or not image_signatures:
         return None, None
     try:
-        if not hasattr(uploaded_pil_img, 'convert'):
-            uploaded_pil_img = Image.fromarray(uploaded_pil_img)
-        uploaded_hash = imagehash.dhash(uploaded_pil_img.convert('RGB'))
+        if not isinstance(uploaded_img, Image.Image):
+            uploaded_img = Image.fromarray(uploaded_img)
+            
+        up_sig = get_img_sig(uploaded_img)
+        best_part = None
+        min_diff = 256 # الحد الأقصى للاختلاف (16x16 = 256)
         
-        best_match = None
-        min_dist = float('inf')
-        for part_no, (h, path) in image_hashes.items():
-            dist = uploaded_hash - h
-            if dist < min_dist:
-                min_dist = dist
-                best_match = (part_no, path)
+        for part_no, (sig, path) in image_signatures.items():
+            # حساب نسبة التطابق بين البصمتين
+            diff = sum(c1 != c2 for c1, c2 in zip(up_sig, sig))
+            if diff < min_diff:
+                min_diff = diff
+                best_part = (part_no, path)
                 
-        if min_dist <= max_distance:
-            return best_match[0], best_match[1]
+        # إذا كانت نسبة التشابه مقبولة (أقل من 65 بت اختلاف من أصل 256)
+        if min_diff <= 65:
+            return best_part[0], best_part[1]
     except Exception as e:
-        print(f"[!] Visual match error: {e}")
+        print(f"[!] Vision matching error: {e}")
     return None, None
 
 def find_image_for_part(query_text):
-    """جلب صورة القطعة المطابقة من أرشيف المستودع بالاسم"""
     if not query_text or not part_images_map:
         return None
     clean_target = re.sub(r'[^a-zA-Z0-9]', '', query_text).lower()
