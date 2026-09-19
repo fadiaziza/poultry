@@ -71,8 +71,6 @@ def send_whatsapp_alert(message):
 # 2. تحميل النماذج وفهرسة الكتالوجات والمستودع
 # ==========================================
 device = "cuda" if torch.cuda.is_available() else "cpu"
-print(f"[*] Loading visual model (clip-ViT-B-32) on {device}...")
-visual_model = SentenceTransformer("clip-ViT-B-32", device=device)
 
 # فهرس نصوص الكتالوجات (PDFs)
 manual_pages = []
