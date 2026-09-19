@@ -22,7 +22,7 @@ BASE_DIR = "/tmp/Maintenance_Manuals"
 IMAGE_DIR = os.path.join(BASE_DIR, "Real_Parts_Images")
 
 def sync_data_from_gcs():
-    """مزامنة الكتالوجات والصور من Google Cloud Storage إلى الذاكرة السريعة /tmp"""
+    """مزامنة الكتالوجات والصور من Google Cloud Storage إلى /tmp"""
     os.makedirs(BASE_DIR, exist_ok=True)
     os.makedirs(IMAGE_DIR, exist_ok=True)
     print(f"[*] Starting download from GCS bucket: {BUCKET_NAME}...")
@@ -46,7 +46,7 @@ def sync_data_from_gcs():
     except Exception as e:
         print(f"[!] Warning during GCS sync: {e}")
 
-# مزامنة الملفات عند بدء التشغيل
+# مزامنة الملفات من السحابة عند بدء التشغيل
 sync_data_from_gcs()
 
 # ==========================================
@@ -113,8 +113,32 @@ def build_manual_index():
 build_manual_index()
 
 # ==========================================
-# 3. محرك البحث الهجين (دقيق للأرقام + دلالي للجمل)
+# 3. محرك البحث الهجين ومطابقة صور القطع
 # ==========================================
+def find_part_image(part_number):
+    """البحث عن صورة حقيقية مطابقة لرقم القطعة في المجلد"""
+    if not os.path.exists(IMAGE_DIR):
+        return None
+        
+    clean_num = part_number.strip()
+    
+    # 1. مطابقة مباشرة لاسم الملف مع الامتداد
+    for ext in [".jpg", ".jpeg", ".png", ".JPG", ".PNG"]:
+        exact_path = os.path.join(IMAGE_DIR, f"{clean_num}{ext}")
+        if os.path.exists(exact_path):
+            return exact_path
+            
+    # 2. مطابقة مرنة تتجاهل النقاط والشرطات وحالة الأحرف
+    clean_flat = re.sub(r'[^a-zA-Z0-9]', '', clean_num).lower()
+    if clean_flat and len(clean_flat) >= 4:
+        for fname in os.listdir(IMAGE_DIR):
+            base, ext = os.path.splitext(fname)
+            fname_flat = re.sub(r'[^a-zA-Z0-9]', '', base).lower()
+            if clean_flat in fname_flat or fname_flat in clean_flat:
+                return os.path.join(IMAGE_DIR, fname)
+                
+    return None
+
 def search_manuals(query, top_k=5):
     """البحث الدقيق للأرقام والأكواد، والدلالي للجمل التقنية"""
     if not manual_pages:
@@ -122,6 +146,8 @@ def search_manuals(query, top_k=5):
     
     clean_query = query.strip()
     pattern = re.escape(clean_query)
+    
+    # أولاً: البحث الحرفي الدقيق للأرقام والأكواد
     exact_results = []
     for item in manual_pages:
         if re.search(pattern, item["text"], re.IGNORECASE):
@@ -132,6 +158,7 @@ def search_manuals(query, top_k=5):
     if exact_results:
         return exact_results, "exact"
 
+    # ثانياً: البحث الدلالي للجمل والوصف (كلمتين فأكثر) مع تصفية الدرجات الضعيفة
     if manual_embeddings is not None and len(clean_query.split()) > 1:
         query_emb = text_model.encode(clean_query, convert_to_tensor=True)
         hits = util.semantic_search(query_emb, manual_embeddings, top_k=top_k)[0]
@@ -141,44 +168,53 @@ def search_manuals(query, top_k=5):
         
     return [], "none"
 
-def maintenance_copilot(query, image=None):
+def maintenance_copilot(query, input_image=None):
     if not query.strip():
-        return "يرجى إدخال رقم القطعة أو رمز الإنذار أو وصف العطل."
+        return "⚠️ يرجى إدخال رقم القطعة أو رمز الإنذار أو وصف العطل.", None
         
-    hits, match_type = search_manuals(query, top_k=5)
+    clean_q = query.strip()
+    hits, match_type = search_manuals(clean_q, top_k=5)
+    matched_image_path = find_part_image(clean_q)
+    
     response = []
     
     if hits:
         if match_type == "exact":
-            response.append(f"### ✅ تم العثور على تطابق دقيق للرمز `{query}`:")
+            response.append(f"### ✅ تم العثور على تطابق دقيق للرمز `{clean_q}` في الكتالوجات:")
         else:
-            response.append(f"### 📚 نتائج الكتالوجات المطابقة لوصف: *\"{query}\"*")
+            response.append(f"### 📚 نتائج الكتالوجات المطابقة للوصف: *\"{clean_q}\"*")
             
         for h in hits:
             response.append(f"- **الملف:** `{h['filename']}` (صفحة {h['page']})")
+            
+            # اقتطاع سياق ظهور الرقم أو النص
             text = h['text'].replace("\n", " ")
-            idx = text.lower().find(query.lower())
+            idx = text.lower().find(clean_q.lower())
             if idx != -1:
                 start = max(0, idx - 50)
-                end = min(len(text), idx + len(query) + 80)
+                end = min(len(text), idx + len(clean_q) + 80)
                 snippet = text[start:end]
             else:
                 snippet = text[:150]
             response.append(f"  > *\"{snippet.strip()}\"*\n")
     else:
-        response.append(f"❌ لم يتم العثور على أي تطابق للرمز أو النص `{query}` داخل صفحات الكتالوجات المفهرسة.")
+        response.append(f"❌ لم يتم العثور على أي تطابق للرمز أو النص `{clean_q}` داخل صفحات الكتالوجات المفهرسة.")
 
+    if matched_image_path:
+        response.append("\n🖼️ **تم العثور على صورة القطعة الحقيقية من قاعدة بيانات المستودع (انظر لوحة الصورة أدناه).**")
+
+    # تنبيه الواتساب عند وجود بلاغات أعطال
     tz = pytz.timezone('Asia/Hebron')
     timestamp = datetime.now(tz).strftime('%Y-%m-%d %I:%M %p')
     
-    if any(k in query.lower() for k in ["عطل", "كسر", "تالف", "طلب قطعة", "alarm", "broken"]):
-        alert_msg = f"⚠️ *إشعار صيانة ومتابعة*\n⏰ الوقت: {timestamp}\n📝 الطلب: {query}\n"
+    if any(k in clean_q.lower() for k in ["عطل", "كسر", "تالف", "طلب قطعة", "alarm", "broken"]):
+        alert_msg = f"⚠️ *إشعار صيانة ومتابعة*\n⏰ الوقت: {timestamp}\n📝 الطلب: {clean_q}\n"
         if hits:
             alert_msg += f"📖 المرجع: {hits[0]['filename']} (صفحة {hits[0]['page']})"
         send_whatsapp_alert(alert_msg)
         response.append("\n---\n📲 تم إرسال إشعار فوري لمجموعة طاقم الصيانة عبر الواتساب.")
 
-    return "\n".join(response)
+    return "\n".join(response), matched_image_path
 
 # ==========================================
 # 4. بناء واجهة المستخدم Gradio مع الترويسة والشعار
@@ -211,28 +247,32 @@ with gr.Blocks(title="منصة الدعم الهندسي - مسلخ عزيزا")
     gr.HTML(HEADER_HTML)
     
     with gr.Row():
-        status_box = gr.Markdown(f"📊 **حالة النظام:** تم تحميل وفهرسة `{total_manuals}` كتالوج فني بالكامل من الحاوية السحابية.")
+        status_box = gr.Markdown(f"📊 **حالة النظام:** تم تحميل وفهرسة `{total_manuals}` كتالوج فني بالكامل من الحاوية السحابية ومزامنة صور المستودع.")
         
     with gr.Row():
         with gr.Column(scale=1):
             query_input = gr.Textbox(
                 label="أدخل رقم القطعة / كود الإنذار / وصف العطل",
-                placeholder="مثال: 0990.WA02.080.00 أو Scalder أو E002...",
+                placeholder="مثال: 0115.D276.000.07 أو 0990.WA02.080.00 أو Scalder...",
                 lines=2
             )
-            image_input = gr.Image(type="pil", label="تحميل صورة القطعة (اختياري)")
+            image_input = gr.Image(type="pil", label="صورة فوتوغرافية من الموقع (اختياري للتحليل)")
             submit_btn = gr.Button("فحص ومطابقة القطعة بالكتالوجات 🔍", variant="primary")
             clear_btn = gr.Button("مسح الحقول")
             
         with gr.Column(scale=1):
             output_box = gr.Markdown(label="تقرير المطابقة الهندسي")
+            matched_img_output = gr.Image(type="filepath", label="صورة القطعة المطابقة من أرشيف المستودع")
             
     submit_btn.click(
         fn=maintenance_copilot,
         inputs=[query_input, image_input],
-        outputs=output_box
+        outputs=[output_box, matched_img_output]
     )
-    clear_btn.click(lambda: ("", None, ""), outputs=[query_input, image_input, output_box])
+    clear_btn.click(
+        lambda: ("", None, "", None),
+        outputs=[query_input, image_input, output_box, matched_img_output]
+    )
 
 if __name__ == "__main__":
     demo.queue().launch(
