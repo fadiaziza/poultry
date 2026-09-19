@@ -51,8 +51,8 @@ sync_data_from_gcs()
 # 1. إعدادات تنبيهات الصيانة عبر الواتساب (Green-API)
 # ==========================================
 ID_INSTANCE = "710722737613"
-API_TOKEN_INSTANCE = "التوكن_الخاص_بك_من_موقع_green_api"
-ALERT_GROUP_ID = "970599431267@c.us"  # رقم هاتفك أو معرّف المجموعة
+API_TOKEN_INSTANCE = "8902219901b2411cb1ebfa944bbfc3d7d499d671111c4fe18e"
+ALERT_GROUP_ID = "970599431267@c.us"  
 def send_whatsapp_alert(message):
     """إرسال إشعار فوري لمجموعة طاقم الصيانة عند رصد عطل أو طلب قطعة"""
     if not API_TOKEN_INSTANCE or "YOUR_GREEN_API" in API_TOKEN_INSTANCE:
