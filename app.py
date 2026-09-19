@@ -262,7 +262,15 @@ def maintenance_copilot(query, input_image=None):
                 clean_q = matched_part_no
         else:
             if not clean_q:
-                return "❌ لم يتم العثور على صورة متطابقة بصرياً مع قطع المستودع المفهرسة. يرجى إدخال رقم القطعة كتابةً.", None
+                # إشعار الواتساب عند تعذر المطابقة البصرية
+                tz = pytz.timezone('Asia/Hebron')
+                timestamp = datetime.now(tz).strftime('%Y-%m-%d %I:%M %p')
+                fail_msg = f"⚠️ *تنبيه فحص ميداني - مسلخ عزيزا*\n⏰ الوقت: {timestamp}\n📸 تم رفع صورة قطعة لم يتعرف عليها النظام تلقائياً، يرجى التحقق اليدوي."
+                send_whatsapp_alert(fail_msg)
+                return "❌ لم يتم العثور على صورة متطابقة بصرياً مع قطع المستودع المفهرسة. يرجى إدخال رقم القطعة كتابةً.\n---\n📲 تم إرسال إشعار لطاقم الصيانة بالمتابعة.", None
+
+    if not clean_q:
+        return "⚠️ يرجى إدخال رقم القطعة (4 مقاطع)، كود الإنذار (مثل E002)، أو رفع صورة القطعة.", None
 
     if not clean_q:
         return "⚠️ يرجى إدخال رقم القطعة (4 مقاطع)، كود الإنذار (مثل E002)، أو رفع صورة القطعة.", None
