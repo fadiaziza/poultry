@@ -48,8 +48,8 @@ sync_data_from_gcs()
 # 1. إعدادات تنبيهات الواتساب (Green-API)
 # ==========================================
 ID_INSTANCE = "710722737613"
-API_TOKEN_INSTANCE = os.environ.get("GREEN_API_TOKEN", "YOUR_GREEN_API_TOKEN_HERE")
-ALERT_GROUP_ID = os.environ.get("ALERT_GROUP_ID", "YOUR_PHONE_OR_GROUP_HERE") 
+API_TOKEN_INSTANCE = "8902219901b2411cb1ebfa944bbfc3d7d499d671111c4fe18e"
+ALERT_GROUP_ID = "970599431267@c.us"
 
 def send_whatsapp_alert(message):
     if not API_TOKEN_INSTANCE or "YOUR_GREEN_API" in API_TOKEN_INSTANCE:
