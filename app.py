@@ -8,8 +8,6 @@ import requests
 from datetime import datetime
 import pytz
 from PIL import Image
-import torch
-from sentence_transformers import SentenceTransformer, util
 import gradio as gr
 from google.cloud import storage
 
@@ -40,35 +38,42 @@ def sync_data_from_gcs():
             if not os.path.exists(dest_path):
                 blob.download_to_filename(dest_path)
                 count += 1
-        print(f"[✓] GCS Sync completed. Downloaded {count} new files.")
+        print(f"[✓] GCS Sync completed. Downloaded {count} files.")
     except Exception as e:
         print(f"[!] Warning during GCS sync: {e}")
 
 sync_data_from_gcs()
 
 # ==========================================
-# 1. إعدادات التنبيهات (Green API)
+# 1. إعدادات تنبيهات الواتساب (Green-API)
 # ==========================================
 ID_INSTANCE = "710722737613"
-API_TOKEN_INSTANCE = os.environ.get("GREEN_API_TOKEN", "")
-ALERT_GROUP_ID = os.environ.get("ALERT_GROUP_ID", "")
+
+# ⚠️ أدخل هنا التوكن ومعرف الواتساب الخاص بك:
+# (يمكنك أيضاً تمريرهما كمتغيرات بيئة GREEN_API_TOKEN و ALERT_GROUP_ID)
+API_TOKEN_INSTANCE = os.environ.get("GREEN_API_TOKEN", "YOUR_GREEN_API_TOKEN_HERE")
+ALERT_GROUP_ID = os.environ.get("ALERT_GROUP_ID", "YOUR_PHONE_OR_GROUP_HERE") 
+# مثال للرقم الشخصي: "97059xxxxxxx@c.us" أو للمجموعة: "xxxxxxxx@g.us"
 
 def send_whatsapp_alert(message):
-    if not API_TOKEN_INSTANCE or not ALERT_GROUP_ID:
+    if not API_TOKEN_INSTANCE or "YOUR_GREEN_API" in API_TOKEN_INSTANCE:
+        print("[!] WhatsApp alert skipped: API Token is not set.")
         return
+    if not ALERT_GROUP_ID or "YOUR_PHONE" in ALERT_GROUP_ID:
+        print("[!] WhatsApp alert skipped: ALERT_GROUP_ID is not set.")
+        return
+
     url = f"https://api.green-api.com/waInstance{ID_INSTANCE}/sendMessage/{API_TOKEN_INSTANCE}"
     payload = {"chatId": ALERT_GROUP_ID, "message": message}
     try:
-        requests.post(url, json=payload, timeout=5)
+        res = requests.post(url, json=payload, timeout=5)
+        print(f"[*] WhatsApp API response: {res.status_code}")
     except Exception as err:
-        print(f"[!] WhatsApp error: {err}")
+        print(f"[!] WhatsApp notification error: {err}")
 
 # ==========================================
-# 2. تحميل نماذج الذكاء الاصطناعي وبناء الفهارس
+# 2. فهرسة صفحات الكتالوجات وربط صور المستودع
 # ==========================================
-device = "cuda" if torch.cuda.is_available() else "cpu"
-print(f"[*] Loading models on {device}...")
-
 manual_pages = []
 
 def build_manual_index():
@@ -90,21 +95,20 @@ def build_manual_index():
                     })
         except Exception:
             pass
-    print(f"[✓] Indexed {len(manual_pages)} pages.")
+    print(f"[✓] Successfully indexed {len(manual_pages)} pages.")
 
 build_manual_index()
 
-# خريطة لربط صور المستودع برمز القطعة المكون من 4 مقاطع
+# ربط صور المستودع بالرموز (Lookup خفيف وسريع بدون استهلاك RAM)
 part_images_map = {}
 if os.path.exists(IMAGE_DIR):
     for f in os.listdir(IMAGE_DIR):
         if f.lower().endswith(('.jpg', '.jpeg', '.png')):
             part_no = os.path.splitext(f)[0]
-            clean_key = re.sub(r'[^a-zA-Z0-9]', '', part_no).lower()
-            full_path = os.path.join(IMAGE_DIR, f)
-            part_images_map[clean_key] = (part_no, full_path)
+            clean_k = re.sub(r'[^a-zA-Z0-9]', '', part_no).lower()
+            part_images_map[clean_k] = (part_no, os.path.join(IMAGE_DIR, f))
 
-# قراءة الشعار المعتمد logo.png وتحويله إلى Base64
+# قراءة الشعار المحلي logo.png وتحويله إلى Base64
 logo_base64 = ""
 for p in ["logo.png", "/app/logo.png"]:
     if os.path.exists(p):
@@ -116,133 +120,131 @@ for p in ["logo.png", "/app/logo.png"]:
             pass
 
 # ==========================================
-# 3. محرك البحث للأكواد الرباعية والإنذارات
+# 3. محرك البحث والتشخيص الصارم (بدون تخمين)
 # ==========================================
-def extract_4_segment_codes(text):
-    """
-    استخراج كود القطعة المكون من 4 مقاطع بدقة:
-    أمثلة: 0990.AD05.007.00 أو 89.3844.900.0034 أو 89 3608 904 0096
-    """
-    pattern_4_segments = r'([A-Za-z0-9]+)[\.\s\-_/]+([A-Za-z0-9]+)[\.\s\-_/]+([A-Za-z0-9]+)[\.\s\-_/]+([A-Za-z0-9]+)'
-    matches = re.findall(pattern_4_segments, text)
-    extracted = []
-    for m in matches:
-        extracted.append(m)  # (seg1, seg2, seg3, seg4)
-    return extracted
+def find_image_for_part(query_text):
+    """جلب صورة القطعة المطابقة من أرشيف المستودع"""
+    if not query_text or not part_images_map:
+        return None
+        
+    clean_target = re.sub(r'[^a-zA-Z0-9]', '', query_text).lower()
+    if clean_target in part_images_map:
+        return part_images_map[clean_target][1]
 
-def generate_variations(token):
-    """توليد صيغ الإنذار الشائعة مثل E002 و E02 و Alarm 02"""
-    variations = {token, token.replace(" ", "")}
-    match = re.match(r'^([A-Za-z]+)0*(\d+)$', token)
-    if match:
-        prefix, num = match.groups()
-        n_int = int(num)
-        variations.update([
-            f"{prefix}{num}",
-            f"{prefix} {num}",
-            f"{prefix}-{num}",
-            f"{prefix}{n_int:02d}",
-            f"{prefix} {n_int:02d}",
-            f"{prefix}{n_int:03d}",
-            f"Alarm {num}",
-            f"Alarm {n_int:02d}",
-            f"Error {num}",
-            f"Error {n_int:02d}"
-        ])
-    return list(variations)
+    # مطابقة على مستوى المقاطع المستخرجة
+    tokens = re.findall(r'[A-Za-z0-9]{4,}', query_text)
+    for tok in tokens:
+        c_tok = tok.lower()
+        if c_tok in part_images_map:
+            return part_images_map[c_tok][1]
 
-def search_manuals(query, top_k=5):
+    for k, v in part_images_map.items():
+        if len(k) >= 6 and (k in clean_target or clean_target in k):
+            return v[1]
+            
+    return None
+
+def search_engine(query, top_k=5):
     if not manual_pages:
         return [], None
         
     clean_q = query.strip()
     
-    # 1. فحص وجود كود قطعة من 4 مقاطع
-    codes_4 = extract_4_segment_codes(clean_q)
+    # 1. فحص كود القطعة المكون من 4 مقاطع (نقاط أو مسافات أو شرطات)
+    codes_4 = re.findall(r'([A-Za-z0-9]+)[\.\s\-_/]+([A-Za-z0-9]+)[\.\s\-_/]+([A-Za-z0-9]+)[\.\s\-_/]+([A-Za-z0-9]+)', clean_q)
     if codes_4:
         for segs in codes_4:
-            # مطابقة المقاطع الأربعة سواء كانت مفصولة بنقاط أو بمسافات
-            regex_pattern = r'\b' + re.escape(segs[0]) + r'[\.\s\-_]+' + re.escape(segs[1]) + r'[\.\s\-_]+' + re.escape(segs[2]) + r'[\.\s\-_]+' + re.escape(segs[3]) + r'\b'
-            matched = []
-            for item in manual_pages:
-                if re.search(regex_pattern, item["text"], re.IGNORECASE):
-                    matched.append(item)
-                    if len(matched) >= top_k:
-                        break
+            pattern = re.escape(segs[0]) + r'[\.\s\-_]+' + re.escape(segs[1]) + r'[\.\s\-_]+' + re.escape(segs[2]) + r'[\.\s\-_]+' + re.escape(segs[3])
+            matched = [p for p in manual_pages if re.search(pattern, p["text"], re.IGNORECASE)]
             if matched:
-                reconstructed_code = ".".join(segs)
-                return matched, reconstructed_code
+                return matched[:top_k], ".".join(segs)
 
-    # 2. فحص وجود كود إنذار أو رقم مباشر
-    raw_tokens = re.findall(r'[A-Za-z0-9][A-Za-z0-9\.\-_/]+', clean_q)
-    for tok in raw_tokens:
-        if len(tok) >= 2:
-            vars_list = generate_variations(tok)
-            for v in vars_list:
-                pat = r'(?<![A-Za-z0-9])' + re.escape(v) + r'(?![A-Za-z0-9])'
-                matched = []
-                for item in manual_pages:
-                    if re.search(pat, item["text"], re.IGNORECASE):
-                        matched.append(item)
-                        if len(matched) >= top_k:
-                            break
+    # 2. فحص إنذارات الأعطال (مثل E002 أو E02 أو Alarm 02)
+    alarms = re.findall(r'\b[A-Za-z]0*\d+\b|\bAlarm\s*\d+\b|\bError\s*\d+\b', clean_q, re.IGNORECASE)
+    if alarms:
+        for a in alarms:
+            m_num = re.search(r'\d+', a)
+            if m_num:
+                num = int(m_num.group())
+                pattern = rf'\b(E|Alarm|Error)\s*0*{num}\b'
+                matched = [p for p in manual_pages if re.search(pattern, p["text"], re.IGNORECASE)]
                 if matched:
-                    return matched, v
-                    
-    # 3. مطابقة الكلمات المباشرة لمنظومات محددة
-    keywords = {"automac": "ماكينة التغليف Automac", "compressor": "ضاغط/كمبرسور التبريد", "eviscerator": "مفرغة أحشاء Meyn"}
-    for kw, label in keywords.items():
-        if kw in clean_q.lower() or label in clean_q:
-            matched = [item for item in manual_pages if re.search(r'\b' + kw + r'\b', item["text"], re.IGNORECASE)]
-            if matched:
-                return matched[:top_k], kw
+                    # إذا ذُكرت ماكينة التغليف، تُعطى الأولوية لكتالوج Automac
+                    if any(k in clean_q for k in ["تغليف", "automac", "fabbri"]):
+                        matched.sort(key=lambda x: any(k in x["filename"].lower() for k in ["automac", "297", "298"]), reverse=True)
+                    return matched[:top_k], a.upper()
+
+    # 3. توجيه الأعطال والمنظومات المحددة بالاسم العربي
+    keywords_map = {
+        "مايسترو": (["maestro", "eviscerat"], ["infeed", "entry", "positioning", "shackle", "drawing", "guide"]),
+        "تغليف": (["automac", "wrapping", "297", "298"], ["tray", "film", "alarm", "infeed", "stop"]),
+        "تبريد": (["compressor", "chiller", "refrigeration"], ["temperature", "pressure", "oil", "cooling"]),
+        "كمبرسور": (["compressor", "airpol", "atlas"], ["pressure", "filter", "separator", "alarm"]),
+        "رياشة": (["plucker", "picking"], ["finger", "belt", "motor"]),
+        "سمط": (["scalder", "scalding"], ["temperature", "water", "circulation"])
+    }
+    
+    for ar_word, (cat_filters, terms) in keywords_map.items():
+        if ar_word in clean_q:
+            pool = [p for p in manual_pages if any(f in p["filename"].lower() for f in cat_filters)]
+            if not pool:
+                pool = manual_pages
+            
+            scored = []
+            for p in pool:
+                score = sum(1 for t in terms if re.search(r'\b' + re.escape(t) + r'\b', p["text"], re.IGNORECASE))
+                if score > 0:
+                    scored.append((score, p))
+            scored.sort(key=lambda x: x[0], reverse=True)
+            if scored:
+                return [x[1] for x in scored[:top_k]], ar_word
+
+    # 4. مطابقة مباشرة لأي كلمة إنجليزية أو رقم يدخله الفني
+    eng_tokens = re.findall(r'[A-Za-z0-9]{3,}', clean_q)
+    for tok in eng_tokens:
+        pat = r'\b' + re.escape(tok) + r'\b'
+        matches = [p for p in manual_pages if re.search(pat, p["text"], re.IGNORECASE)]
+        if matches:
+            return matches[:top_k], tok
 
     return [], None
 
-def find_image_by_part_no(part_no):
-    if not os.path.exists(IMAGE_DIR) or not part_no:
-        return None
-    clean_target = re.sub(r'[^a-zA-Z0-9]', '', part_no).lower()
-    if clean_target in part_images_map:
-        return part_images_map[clean_target][1]
-    return None
-
 def maintenance_copilot(query, input_image=None):
     if not query.strip() and input_image is None:
-        return "⚠️ يرجى إدخال رقم القطعة المكون من 4 مقاطع أو كود الإنذار.", None
+        return "⚠️ يرجى إدخال رقم القطعة (4 مقاطع)، كود الإنذار (مثل E002)، أو وصف العطل.", None
         
     clean_q = query.strip()
-    hits, matched_code = search_manuals(clean_q, top_k=5)
-    matched_image_path = None
+    hits, matched_term = search_engine(clean_q, top_k=4)
+    matched_image_path = find_image_for_part(matched_term if matched_term else clean_q)
     response = []
 
-    lookup_target = matched_code if matched_code else clean_q
-    matched_image_path = find_image_by_part_no(lookup_target)
-
     if hits:
-        response.append(f"### ✅ تم العثور على تطابق دقيق للرمز `{lookup_target}`:")
+        response.append(f"### ✅ تم العثور على مراجع مطابقة في الكتالوجات:")
         for h in hits:
             response.append(f"- **الملف:** `{h['filename']}` (صفحة {h['page']})")
+            
             text = h['text'].replace("\r", "")
-            idx = text.lower().find(lookup_target.lower().split('.')[0])
+            target = matched_term if matched_term else clean_q
+            idx = text.lower().find(target.lower().split()[0])
             if idx != -1:
-                start = max(0, idx - 60)
-                end = min(len(text), idx + len(lookup_target) + 140)
+                start = max(0, idx - 50)
+                end = min(len(text), idx + len(target) + 140)
                 snippet = text[start:end].replace("\n", " ").strip()
             else:
-                snippet = text[:160].replace("\n", " ").strip()
+                words = text.split()
+                snippet = " ".join(words[:40])
             response.append(f"  > *\"...{snippet}...\"*\n")
     else:
-        response.append(f"❌ لم يتم العثور على أي تطابق للرمز أو الإنذار `{clean_q}` داخل الكتالوجات المفهرسة.")
+        response.append(f"❌ لم يتم العثور على أي تطابق لطلبك `{clean_q}` داخل صفحات الكتالوجات.")
 
     if matched_image_path:
-        response.append("\n🖼️ **تم إرفاق صورة القطعة الحقيقية المطابقة من أرشيف المستودع الميداني.**")
+        response.append("\n🖼️ **تم إرفاق صورة القطعة الحقيقية من أرشيف المستودع الميداني أدناه.**")
 
-    # إشعار الواتساب عند وجود بلاغات
+    # إرسال تنبيه الواتساب عند وجود بلاغات الأعطال
     tz = pytz.timezone('Asia/Hebron')
     timestamp = datetime.now(tz).strftime('%Y-%m-%d %I:%M %p')
-    if any(k in clean_q.lower() for k in ["عطل", "انذار", "إنذار", "تالف", "طلب قطعة", "alarm"]):
-        alert_msg = f"⚠️ *إشعار صيانة ومتابعة*\n⏰ الوقت: {timestamp}\n📝 البلاغ: {clean_q}\n"
+    if any(k in clean_q.lower() for k in ["عطل", "مشكله", "مشكلة", "انذار", "إنذار", "تالف", "كسر", "alarm"]):
+        alert_msg = f"⚠️ *بلاغ صيانة ميداني*\n⏰ الوقت: {timestamp}\n📝 الطلب: {clean_q}\n"
         if hits:
             alert_msg += f"📖 المرجع: {hits[0]['filename']} (صفحة {hits[0]['page']})"
         send_whatsapp_alert(alert_msg)
@@ -251,7 +253,7 @@ def maintenance_copilot(query, input_image=None):
     return "\n".join(response), matched_image_path
 
 # ==========================================
-# 4. واجهة Gradio
+# 4. واجهة Gradio الرسمية
 # ==========================================
 total_manuals = len(glob.glob(os.path.join(BASE_DIR, "**/*.pdf"), recursive=True))
 
@@ -282,13 +284,13 @@ with gr.Blocks(title="منصة الصيانة الهندسية - مسلخ عزي
     gr.HTML(HEADER_HTML)
     
     with gr.Row():
-        status_box = gr.Markdown(f"📊 **حالة النظام:** مفهرس `{total_manuals}` كتالوج بالكامل ومطابقة أرقام القطع المكونة من 4 مقاطع.")
+        status_box = gr.Markdown(f"📊 **حالة النظام:** تم تجهيز وفهرسة `{total_manuals}` كتالوج فني ومطابقة صور قطع المستودع الميداني.")
         
     with gr.Row():
         with gr.Column(scale=1):
             query_input = gr.Textbox(
-                label="أدخل رقم القطعة (4 مقاطع) أو كود الإنذار",
-                placeholder="أمثلة: 0990.AD05.007.00 أو 89.3844.900.0034 أو 89 3608 904 0096 أو E002",
+                label="أدخل كود الإنذار / رقم القطعة (4 مقاطع) / وصف العطل",
+                placeholder="أمثلة: انذار E002 ماكينة التغليف | مشكله ماكينه المايسترو | 0990.AD05.007.00 | 89 3608 904 0096",
                 lines=2
             )
             image_input = gr.Image(type="pil", label="صورة القطعة الميدانية (اختياري)")
@@ -296,7 +298,7 @@ with gr.Blocks(title="منصة الصيانة الهندسية - مسلخ عزي
             clear_btn = gr.Button("مسح الحقول")
             
         with gr.Column(scale=1):
-            output_box = gr.Markdown(label="تقرير الفحص الفني والمطابقة")
+            output_box = gr.Markdown(label="تقرير الفحص الفني والحلول")
             matched_img_output = gr.Image(type="filepath", label="صورة القطعة المطابقة من أرشيف المستودع")
             
     submit_btn.click(
