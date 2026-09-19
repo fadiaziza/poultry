@@ -7,8 +7,7 @@ import fitz  # PyMuPDF
 import requests
 from datetime import datetime
 import pytz
-from PIL import Image
-import numpy as np
+from PIL import Image, ImageStat
 import gradio as gr
 from google.cloud import storage
 
@@ -48,39 +47,25 @@ sync_data_from_gcs()
 # ==========================================
 # 1. إعدادات تنبيهات الواتساب (Green-API)
 # ==========================================
-# ==========================================
-# دالة موحدة ومتكاملة لإرسال تنبيهات الواتساب
-# ==========================================
-def send_whatsapp_alert(part_or_query, hit_details=None, has_image=False):
-    instance_id = "710722737613"
-    api_token = "8902219901b2411cb1ebfa944bbfc3d7d499d671111c4fe18e"
-    chat_id = "970599431267@c.us"
-    
-    tz = pytz.timezone('Asia/Hebron')
-    timestamp = datetime.now(tz).strftime('%Y-%m-%d %I:%M %p')
-    
-    message = f"🔔 *إشعار صيانة ومطابقة - مسلخ عزيزا*\n"
-    message += f"⏰ الوقت: {timestamp}\n"
-    message += f"🔍 القطعة / البلاغ: `{part_or_query}`\n"
-    
-    if hit_details:
-        message += f"📖 المرجع الفني: {hit_details.get('filename')} (صفحة {hit_details.get('page')})\n"
-    if has_image:
-        message += f"🖼️ الحالة: تم استخراج صورة مطابقة من أرشيف المستودع."
+ID_INSTANCE = "710722737613"
+API_TOKEN_INSTANCE = os.environ.get("GREEN_API_TOKEN", "YOUR_GREEN_API_TOKEN_HERE")
+ALERT_GROUP_ID = os.environ.get("ALERT_GROUP_ID", "YOUR_PHONE_OR_GROUP_HERE") 
 
-    url = f"https://api.green-api.com/waInstance{instance_id}/sendMessage/{api_token}"
-    payload = {
-        "chatId": chat_id,
-        "message": message
-    }
-    
+def send_whatsapp_alert(message):
+    if not API_TOKEN_INSTANCE or "YOUR_GREEN_API" in API_TOKEN_INSTANCE:
+        return
+    if not ALERT_GROUP_ID or "YOUR_PHONE" in ALERT_GROUP_ID:
+        return
+
+    url = f"https://api.green-api.com/waInstance{ID_INSTANCE}/sendMessage/{API_TOKEN_INSTANCE}"
+    payload = {"chatId": ALERT_GROUP_ID, "message": message}
     try:
-        response = requests.post(url, json=payload, timeout=8)
-        print(f"[*] WhatsApp Status: {response.status_code}, Response: {response.text}")
-    except Exception as e:
-        print(f"[!] WhatsApp Send Error: {e}")
+        requests.post(url, json=payload, timeout=5)
+    except Exception as err:
+        print(f"[!] WhatsApp notification error: {err}")
+
 # ==========================================
-# 2. فهرسة صفحات الكتالوجات وصور المستودع الهندسية
+# 2. فهرسة صفحات الكتالوجات وبصمات صور المستودع
 # ==========================================
 manual_pages = []
 
@@ -107,21 +92,17 @@ def build_manual_index():
 
 build_manual_index()
 
-# فهرسة صور المستودع بناءً على التوقيع الهندسي (Edge/Brightness Signature)
+# فهرسة الصور بصرياً باستخدام توقيع البكسلات المصغرة (Thumbnail Signature)
+# طريقة خفيفة وسريعة ولا تستهلك رام إطلاقاً
 part_images_map = {}
 image_signatures = {}
 
-def compute_engineering_signature(pil_img):
-    """استخراج توقيع هندسي خفيف يتحمل اختلافات الإضاءة والزوايا"""
-    try:
-        gray = pil_img.convert('L').resize((24, 24), Image.Resampling.BILINEAR)
-        arr = np.array(gray, dtype=np.float32)
-        # حساب التدرجات الهندسية (الحواف)
-        grad_x = np.abs(np.diff(arr, axis=1))
-        grad_y = np.abs(np.diff(arr, axis=0))
-        return np.mean(grad_x) + np.mean(grad_y)
-    except Exception:
-        return 0.0
+def get_img_sig(img):
+    """استخراج بصمة بصرية سريعة من 64 بكسل مع تباين الإضاءة"""
+    img_gray = img.convert('L').resize((16, 16), Image.Resampling.BILINEAR)
+    pixels = list(img_gray.getdata())
+    avg = sum(pixels) / len(pixels)
+    return [1 if p > avg else 0 for p in pixels]
 
 def build_image_index():
     global part_images_map, image_signatures
@@ -138,15 +119,14 @@ def build_image_index():
             part_images_map[clean_k] = (part_no, img_path)
             try:
                 with Image.open(img_path) as im:
-                    sig = compute_engineering_signature(im)
-                    image_signatures[part_no] = (sig, img_path)
+                    image_signatures[part_no] = (get_img_sig(im), img_path)
             except Exception:
                 pass
-    print(f"[✓] Indexed {len(image_signatures)} part signatures successfully.")
+    print(f"[✓] Indexed {len(image_signatures)} part images for visual comparison.")
 
 build_image_index()
 
-# قراءة الشعار المحلي logo.png
+# قراءة الشعار المحلي المعتمد logo.png
 logo_base64 = ""
 for p in ["logo.png", "/app/logo.png"]:
     if os.path.exists(p):
@@ -158,28 +138,29 @@ for p in ["logo.png", "/app/logo.png"]:
             pass
 
 # ==========================================
-# 3. محرك البحث والتشخيص الصارم
+# 3. محرك المطابقة البصرية والبحث الصارم
 # ==========================================
 def match_uploaded_image(uploaded_img):
-    """مقارنة الصورة المرفوعة مع توقيعات صور الكتالوجات في المستودع"""
+    """مقارنة الصورة المرفوعة مع صور المستودع"""
     if uploaded_img is None or not image_signatures:
         return None, None
     try:
         if not isinstance(uploaded_img, Image.Image):
             uploaded_img = Image.fromarray(uploaded_img)
             
-        up_sig = compute_engineering_signature(uploaded_img)
+        up_sig = get_img_sig(uploaded_img)
         best_part = None
-        min_diff = float('inf')
+        min_diff = 256 # الحد الأقصى للاختلاف (16x16 = 256)
         
         for part_no, (sig, path) in image_signatures.items():
-            diff = abs(up_sig - sig)
+            # حساب نسبة التطابق بين البصمتين
+            diff = sum(c1 != c2 for c1, c2 in zip(up_sig, sig))
             if diff < min_diff:
                 min_diff = diff
                 best_part = (part_no, path)
                 
-        # إذا كان الفارق الهندسي ضمن الحدود المقبولة
-        if min_diff <= 15.0:
+        # إذا كانت نسبة التشابه مقبولة (أقل من 65 بت اختلاف من أصل 256)
+        if min_diff <= 65:
             return best_part[0], best_part[1]
     except Exception as e:
         print(f"[!] Vision matching error: {e}")
@@ -208,7 +189,7 @@ def search_engine(query, top_k=5):
         return [], None
     clean_q = query.strip()
     
-    # 1. كود القطعة المكون من 4 مقاطع
+    # 1. فحص كود القطعة المكون من 4 مقاطع (نقاط أو مسافات أو شرطات)
     codes_4 = re.findall(r'([A-Za-z0-9]+)[\.\s\-_/]+([A-Za-z0-9]+)[\.\s\-_/]+([A-Za-z0-9]+)[\.\s\-_/]+([A-Za-z0-9]+)', clean_q)
     if codes_4:
         for segs in codes_4:
@@ -217,7 +198,7 @@ def search_engine(query, top_k=5):
             if matched:
                 return matched[:top_k], ".".join(segs)
 
-    # 2. إنذارات الأعطال (E002)
+    # 2. فحص إنذارات الأعطال (مثل E002 أو E02 أو Alarm 02)
     alarms = re.findall(r'\b[A-Za-z]0*\d+\b|\bAlarm\s*\d+\b|\bError\s*\d+\b', clean_q, re.IGNORECASE)
     if alarms:
         for a in alarms:
@@ -232,7 +213,7 @@ def search_engine(query, top_k=5):
                         return matches_sorted[:top_k], a.upper()
                     return matched[:top_k], a.upper()
 
-    # 3. توجيه الأعطال والمنظومات العربية
+    # 3. توجيه الأعطال والمنظومات المحددة بالاسم العربي
     keywords_map = {
         "مايسترو": (["maestro", "eviscerat"], ["infeed", "entry", "positioning", "shackle", "drawing", "guide"]),
         "تغليف": (["automac", "wrapping", "297", "298"], ["tray", "film", "alarm", "infeed", "stop"]),
@@ -256,7 +237,7 @@ def search_engine(query, top_k=5):
             if scored:
                 return [x[1] for x in scored[:top_k]], ar_word
 
-    # 4. مطابقة مباشرة
+    # 4. مطابقة مباشرة لأي رمز أو كلمة
     eng_tokens = re.findall(r'[A-Za-z0-9]{3,}', clean_q)
     for tok in eng_tokens:
         pat = r'\b' + re.escape(tok) + r'\b'
@@ -271,19 +252,20 @@ def maintenance_copilot(query, input_image=None):
     matched_image_path = None
     response = []
 
+    # معالجة الصورة المرفوعة والمطابقة البصرية
     if input_image is not None:
         matched_part_no, matched_img = match_uploaded_image(input_image)
         if matched_part_no:
-            response.append(f"📸 **تم التعرف بصرياً على القطعة:** `{matched_part_no}`")
+            response.append(f"📸 **تم التعرف بصرياً على صورة القطعة:** `{matched_part_no}`")
             matched_image_path = matched_img
             if not clean_q:
                 clean_q = matched_part_no
         else:
             if not clean_q:
-                return "❌ لم يتم التعرف على الصورة بشكل مطابق في الأرشيف. يرجى إدخال رقم القطعة (4 مقاطع) كتابةً.", None
+                return "❌ لم يتم العثور على صورة متطابقة بصرياً مع قطع المستودع المفهرسة. يرجى إدخال رقم القطعة كتابةً.", None
 
     if not clean_q:
-        return "⚠️ يرجى إدخال رقم القطعة أو رفع صورتها.", None
+        return "⚠️ يرجى إدخال رقم القطعة (4 مقاطع)، كود الإنذار (مثل E002)، أو رفع صورة القطعة.", None
 
     hits, matched_term = search_engine(clean_q, top_k=4)
     if not matched_image_path:
@@ -305,10 +287,10 @@ def maintenance_copilot(query, input_image=None):
                 snippet = " ".join(words[:40])
             response.append(f"  > *\"...{snippet}...\"*\n")
     else:
-        response.append(f"❌ لم يتم العثور على تطابق لطلبك `{clean_q}` داخل صفحات الكتالوجات.")
+        response.append(f"❌ لم يتم العثور على أي تطابق لطلبك `{clean_q}` داخل صفحات الكتالوجات.")
 
     if matched_image_path:
-        response.append("\n🖼️ **تم إرفاق صورة القطعة الحقيقية من أرشيف المستودع أدناه.**")
+        response.append("\n🖼️ **تم إرفاق صورة القطعة الحقيقية من أرشيف المستودع الميداني أدناه.**")
 
     # إشعار الواتساب
     tz = pytz.timezone('Asia/Hebron')
