@@ -61,48 +61,40 @@ def send_whatsapp_alert(message):
     try:
         requests.post(url, json=payload, timeout=5)
     except Exception as err:
-        print(f"[!] WhatsApp notification error: {err}")
+        print(f"[!] WhatsApp error: {err}")
 
 # ==========================================
-# 2. تحميل النماذج وفهرسة الكتالوجات والصور
+# 2. تحميل نماذج الذكاء الاصطناعي وبناء الفهارس
 # ==========================================
-print("[*] Loading embedding model...")
 device = "cuda" if torch.cuda.is_available() else "cpu"
-text_model = SentenceTransformer("all-MiniLM-L6-v2", device=device)
+print(f"[*] Loading models on {device}...")
 
 manual_pages = []
-manual_embeddings = None
 
 def build_manual_index():
-    global manual_pages, manual_embeddings
+    global manual_pages
     manual_pages = []
     pdf_files = glob.glob(os.path.join(BASE_DIR, "**/*.pdf"), recursive=True)
-    
     print(f"[*] Indexing {len(pdf_files)} PDF manuals...")
-    texts = []
     for pdf_path in pdf_files:
         filename = os.path.basename(pdf_path)
         try:
             doc = fitz.open(pdf_path)
             for page_num in range(len(doc)):
                 page_text = doc[page_num].get_text("text").strip()
-                if len(page_text) > 20:
-                    texts.append(page_text)
+                if len(page_text) > 15:
                     manual_pages.append({
                         "filename": filename,
                         "page": page_num + 1,
                         "text": page_text
                     })
-        except Exception as e:
+        except Exception:
             pass
-            
-    if texts:
-        manual_embeddings = text_model.encode(texts, convert_to_tensor=True, show_progress_bar=False)
-        print(f"[✓] Successfully indexed {len(texts)} pages from {len(pdf_files)} manuals.")
+    print(f"[✓] Indexed {len(manual_pages)} pages.")
 
 build_manual_index()
 
-# خريطة لربط أسماء الصور الحقيقية برمز القطعة
+# خريطة لربط صور المستودع برمز القطعة المكون من 4 مقاطع
 part_images_map = {}
 if os.path.exists(IMAGE_DIR):
     for f in os.listdir(IMAGE_DIR):
@@ -112,144 +104,145 @@ if os.path.exists(IMAGE_DIR):
             full_path = os.path.join(IMAGE_DIR, f)
             part_images_map[clean_key] = (part_no, full_path)
 
-# تحويل لوجو عزيزا إلى Base64 من الملف المحلي logo.png
+# قراءة الشعار المعتمد logo.png وتحويله إلى Base64
 logo_base64 = ""
-for logo_candidate in ["logo.png", "/app/logo.png"]:
-    if os.path.exists(logo_candidate):
-        with open(logo_candidate, "rb") as img_f:
-            logo_base64 = base64.b64encode(img_f.read()).decode("utf-8")
-        break
+for p in ["logo.png", "/app/logo.png"]:
+    if os.path.exists(p):
+        try:
+            with open(p, "rb") as f:
+                logo_base64 = base64.b64encode(f.read()).decode("utf-8")
+            break
+        except Exception:
+            pass
 
 # ==========================================
-# 3. محرك البحث الهجين ومعالجة الإنذارات
+# 3. محرك البحث للأكواد الرباعية والإنذارات
 # ==========================================
-TECHNICAL_DICTIONARY = {
-    "تغليف": ["automac", "wrapping", "fabbri", "film", "tray"],
-    "انذار": ["alarm", "error", "fault", "warning"],
-    "إنذار": ["alarm", "error", "fault", "warning"],
-    "ثلاجة": ["cooling", "refrigeration", "compressor", "condenser", "evaporator", "chiller"],
-    "ثلاجات": ["cooling", "refrigeration", "compressor", "condenser", "evaporator", "chiller"],
-    "تبريد": ["cooling", "refrigeration", "chilling", "air blast"],
-    "كمبرسور": ["compressor", "screw compressor"],
-    "مفرغة": ["eviscerator", "maestro"],
-    "رياشة": ["plucker", "picking"],
-    "سمط": ["scalder", "scalding"]
-}
+def extract_4_segment_codes(text):
+    """
+    استخراج كود القطعة المكون من 4 مقاطع بدقة:
+    أمثلة: 0990.AD05.007.00 أو 89.3844.900.0034 أو 89 3608 904 0096
+    """
+    pattern_4_segments = r'([A-Za-z0-9]+)[\.\s\-_/]+([A-Za-z0-9]+)[\.\s\-_/]+([A-Za-z0-9]+)[\.\s\-_/]+([A-Za-z0-9]+)'
+    matches = re.findall(pattern_4_segments, text)
+    extracted = []
+    for m in matches:
+        extracted.append(m)  # (seg1, seg2, seg3, seg4)
+    return extracted
 
-def generate_code_variations(code):
-    variations = [code]
-    match = re.match(r'^([A-Za-z]+)0*(\d+)$', code)
+def generate_variations(token):
+    """توليد صيغ الإنذار الشائعة مثل E002 و E02 و Alarm 02"""
+    variations = {token, token.replace(" ", "")}
+    match = re.match(r'^([A-Za-z]+)0*(\d+)$', token)
     if match:
         prefix, num = match.groups()
-        variations.append(f"{prefix}{num}")
-        variations.append(f"{prefix} {num}")
-        variations.append(f"{prefix}-{num}")
-        variations.append(f"{prefix}{int(num):02d}")
-        variations.append(f"{prefix} {int(num):02d}")
-        variations.append(f"{prefix}{int(num):03d}")
-        variations.append(f"Alarm {num}")
-        variations.append(f"Alarm {int(num):02d}")
-        variations.append(f"Error {num}")
-        variations.append(f"Error {int(num):02d}")
-    return list(set(variations))
+        n_int = int(num)
+        variations.update([
+            f"{prefix}{num}",
+            f"{prefix} {num}",
+            f"{prefix}-{num}",
+            f"{prefix}{n_int:02d}",
+            f"{prefix} {n_int:02d}",
+            f"{prefix}{n_int:03d}",
+            f"Alarm {num}",
+            f"Alarm {n_int:02d}",
+            f"Error {num}",
+            f"Error {n_int:02d}"
+        ])
+    return list(variations)
 
 def search_manuals(query, top_k=5):
     if not manual_pages:
-        return [], "none", None
-    
-    clean_query = query.strip()
-    raw_tokens = re.findall(r'[A-Za-z0-9][A-Za-z0-9\.\-_/]+', clean_query)
-    
-    # 1. مطابقة دقيقة لأكواد الإنذارات وقطع الغيار
-    for token in raw_tokens:
-        if len(token) >= 2:
-            variations = generate_code_variations(token)
-            for var in variations:
-                pattern = r'\b' + re.escape(var) + r'\b'
-                matches = [item for item in manual_pages if re.search(pattern, item["text"], re.IGNORECASE)]
-                if matches:
-                    return matches[:top_k], "exact", var
-
-    # 2. مطابقة بالكلمات المفتاحية الفنية (تغليف / تبريد / خطوط الذبح)
-    expanded_terms = []
-    for ar_term, en_terms in TECHNICAL_DICTIONARY.items():
-        if ar_term in clean_query:
-            expanded_terms.extend(en_terms)
-            
-    if expanded_terms:
-        scored = []
-        for item in manual_pages:
-            score = sum(1 for term in expanded_terms if re.search(r'\b' + re.escape(term) + r'\b', item["text"], re.IGNORECASE))
-            if score > 0:
-                scored.append((score, item))
-        scored.sort(key=lambda x: x[0], reverse=True)
-        if scored:
-            return [m[1] for m in scored[:top_k]], "keyword", expanded_terms[0]
-
-    # 3. البحث الدلالي العام
-    if manual_embeddings is not None:
-        query_emb = text_model.encode(clean_query, convert_to_tensor=True)
-        hits = util.semantic_search(query_emb, manual_embeddings, top_k=top_k)[0]
-        semantic_results = [manual_pages[hit['corpus_id']] for hit in hits if hit['score'] >= 0.35]
-        if semantic_results:
-            return semantic_results, "semantic", None
+        return [], None
         
-    return [], "none", None
+    clean_q = query.strip()
+    
+    # 1. فحص وجود كود قطعة من 4 مقاطع
+    codes_4 = extract_4_segment_codes(clean_q)
+    if codes_4:
+        for segs in codes_4:
+            # مطابقة المقاطع الأربعة سواء كانت مفصولة بنقاط أو بمسافات
+            regex_pattern = r'\b' + re.escape(segs[0]) + r'[\.\s\-_]+' + re.escape(segs[1]) + r'[\.\s\-_]+' + re.escape(segs[2]) + r'[\.\s\-_]+' + re.escape(segs[3]) + r'\b'
+            matched = []
+            for item in manual_pages:
+                if re.search(regex_pattern, item["text"], re.IGNORECASE):
+                    matched.append(item)
+                    if len(matched) >= top_k:
+                        break
+            if matched:
+                reconstructed_code = ".".join(segs)
+                return matched, reconstructed_code
+
+    # 2. فحص وجود كود إنذار أو رقم مباشر
+    raw_tokens = re.findall(r'[A-Za-z0-9][A-Za-z0-9\.\-_/]+', clean_q)
+    for tok in raw_tokens:
+        if len(tok) >= 2:
+            vars_list = generate_variations(tok)
+            for v in vars_list:
+                pat = r'(?<![A-Za-z0-9])' + re.escape(v) + r'(?![A-Za-z0-9])'
+                matched = []
+                for item in manual_pages:
+                    if re.search(pat, item["text"], re.IGNORECASE):
+                        matched.append(item)
+                        if len(matched) >= top_k:
+                            break
+                if matched:
+                    return matched, v
+                    
+    # 3. مطابقة الكلمات المباشرة لمنظومات محددة
+    keywords = {"automac": "ماكينة التغليف Automac", "compressor": "ضاغط/كمبرسور التبريد", "eviscerator": "مفرغة أحشاء Meyn"}
+    for kw, label in keywords.items():
+        if kw in clean_q.lower() or label in clean_q:
+            matched = [item for item in manual_pages if re.search(r'\b' + kw + r'\b', item["text"], re.IGNORECASE)]
+            if matched:
+                return matched[:top_k], kw
+
+    return [], None
+
+def find_image_by_part_no(part_no):
+    if not os.path.exists(IMAGE_DIR) or not part_no:
+        return None
+    clean_target = re.sub(r'[^a-zA-Z0-9]', '', part_no).lower()
+    if clean_target in part_images_map:
+        return part_images_map[clean_target][1]
+    return None
 
 def maintenance_copilot(query, input_image=None):
     if not query.strip() and input_image is None:
-        return "⚠️ يرجى كتابة رقم القطعة أو رمز الإنذار أو إرفاق صورة القطعة.", None
+        return "⚠️ يرجى إدخال رقم القطعة المكون من 4 مقاطع أو كود الإنذار.", None
         
     clean_q = query.strip()
+    hits, matched_code = search_manuals(clean_q, top_k=5)
     matched_image_path = None
     response = []
 
-    # إذا تم إرفاق صورة للبحث بدون كتابة رقم
-    if input_image is not None and not clean_q:
-        if part_images_map:
-            first_key = list(part_images_map.keys())[0]
-            clean_q, matched_image_path = part_images_map[first_key]
-            response.append(f"🔍 **تم فحص الصورة واسترجاع رقم القطعة:** `{clean_q}`")
-
-    hits, match_type, matched_term = search_manuals(clean_q, top_k=5)
-    
-    # فحص وجود صورة حقيقية مطابقة في المستودع
-    if not matched_image_path:
-        search_key = re.sub(r'[^a-zA-Z0-9]', '', (matched_term if matched_term else clean_q)).lower()
-        if search_key in part_images_map:
-            matched_image_path = part_images_map[search_key][1]
+    lookup_target = matched_code if matched_code else clean_q
+    matched_image_path = find_image_by_part_no(lookup_target)
 
     if hits:
-        if match_type == "exact":
-            response.append(f"### ✅ تم العثور على مراجع الإنذار / القطعة `{matched_term}` في الكتالوجات:")
-        elif match_type == "keyword":
-            response.append(f"### ⚙️ تم العثور على مراجع تطابق المنظومة ({matched_term}):")
-        else:
-            response.append(f"### 📚 نتائج الكتالوجات المطابقة للطلب: *\"{clean_q}\"*")
-            
+        response.append(f"### ✅ تم العثور على تطابق دقيق للرمز `{lookup_target}`:")
         for h in hits:
             response.append(f"- **الملف:** `{h['filename']}` (صفحة {h['page']})")
-            text = h['text'].replace("\n", " ")
-            term = matched_term if matched_term else clean_q
-            idx = text.lower().find(term.lower())
+            text = h['text'].replace("\r", "")
+            idx = text.lower().find(lookup_target.lower().split('.')[0])
             if idx != -1:
                 start = max(0, idx - 60)
-                end = min(len(text), idx + len(term) + 120)
-                snippet = text[start:end]
+                end = min(len(text), idx + len(lookup_target) + 140)
+                snippet = text[start:end].replace("\n", " ").strip()
             else:
-                snippet = text[:160]
-            response.append(f"  > *\"...{snippet.strip()}...\"*\n")
+                snippet = text[:160].replace("\n", " ").strip()
+            response.append(f"  > *\"...{snippet}...\"*\n")
     else:
-        response.append(f"❌ لم يتم العثور على أي تطابق للرمز أو الوصف `{clean_q}` داخل الكتالوجات المفهرسة.")
+        response.append(f"❌ لم يتم العثور على أي تطابق للرمز أو الإنذار `{clean_q}` داخل الكتالوجات المفهرسة.")
 
     if matched_image_path:
         response.append("\n🖼️ **تم إرفاق صورة القطعة الحقيقية المطابقة من أرشيف المستودع الميداني.**")
 
-    # إشعار الواتساب
+    # إشعار الواتساب عند وجود بلاغات
     tz = pytz.timezone('Asia/Hebron')
     timestamp = datetime.now(tz).strftime('%Y-%m-%d %I:%M %p')
-    if any(k in clean_q.lower() for k in ["عطل", "انذار", "إنذار", "تالف", "كسر", "alarm", "error"]):
-        alert_msg = f"⚠️ *إشعار صيانة ومتابعة*\n⏰ الوقت: {timestamp}\n📝 الطلب: {clean_q}\n"
+    if any(k in clean_q.lower() for k in ["عطل", "انذار", "إنذار", "تالف", "طلب قطعة", "alarm"]):
+        alert_msg = f"⚠️ *إشعار صيانة ومتابعة*\n⏰ الوقت: {timestamp}\n📝 البلاغ: {clean_q}\n"
         if hits:
             alert_msg += f"📖 المرجع: {hits[0]['filename']} (صفحة {hits[0]['page']})"
         send_whatsapp_alert(alert_msg)
@@ -258,28 +251,28 @@ def maintenance_copilot(query, input_image=None):
     return "\n".join(response), matched_image_path
 
 # ==========================================
-# 4. واجهة المستخدم Gradio
+# 4. واجهة Gradio
 # ==========================================
 total_manuals = len(glob.glob(os.path.join(BASE_DIR, "**/*.pdf"), recursive=True))
 
-logo_img_tag = f'<img src="data:image/png;base64,{logo_base64}" style="width: 100%; height: 100%; object-fit: contain;">' if logo_base64 else '<span style="font-size: 22px; font-weight: 900; color: #1b5e20;">عزيزا</span>'
+logo_html = f'<img src="data:image/png;base64,{logo_base64}" style="width: 100%; height: 100%; object-fit: contain;">' if logo_base64 else '<span style="font-size: 20px; font-weight: 900; color: #1b5e20;">عزيزا</span>'
 
 HEADER_HTML = f"""
-<div style="background: linear-gradient(135deg, #0f3d1e 0%, #1b5e20 100%); padding: 20px 25px; border-radius: 14px; color: white; margin-bottom: 20px; box-shadow: 0 4px 15px rgba(0,0,0,0.18); direction: rtl; text-align: right; border-bottom: 4px solid #ffcc00;">
+<div style="background: linear-gradient(135deg, #0b3d20 0%, #1b5e20 100%); padding: 18px 25px; border-radius: 14px; color: white; margin-bottom: 20px; box-shadow: 0 4px 15px rgba(0,0,0,0.18); direction: rtl; text-align: right; border-bottom: 4px solid #ffcc00;">
     <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 15px;">
         <div style="display: flex; align-items: center; gap: 20px;">
             <div style="background: #ffffff; border-radius: 50%; padding: 4px; box-shadow: 0 4px 12px rgba(0,0,0,0.3); display: flex; align-items: center; justify-content: center; width: 85px; height: 85px; border: 3px solid #ffcc00; overflow: hidden;">
-                {logo_img_tag}
+                {logo_html}
             </div>
             <div>
-                <h1 style="margin: 0; font-size: 24px; font-weight: 800; color: #ffffff;">شركة دواجن فلسطين - مسلخ عزيزا </h1>
-                <p style="margin: 4px 0 0 0; font-size: 14px; color: #e8f5e9;">المنصة الهندسية لمطابقة الكتالوجات وتشخيص الأعطال (Meyn • ماكينات التغليف Automac •  )</p>
+                <h1 style="margin: 0; font-size: 23px; font-weight: 800; color: #ffffff;">شركة دواجن فلسطين - مسلخ عزيزا المركزي</h1>
+                <p style="margin: 4px 0 0 0; font-size: 14px; color: #e8f5e9;">نظام الصيانة والتشخيص الهندسي الدقيق (خطوط Meyn • ماكينات التغليف Automac • منظومات التبريد)</p>
             </div>
         </div>
         <div style="border-right: 2px solid rgba(255,255,255,0.25); padding-right: 20px;">
-            <span style="font-size: 12px; color: #c8e6c9; display: block;">تصميم وتطوير النظام:</span>
+            <span style="font-size: 12px; color: #c8e6c9; display: block;">إعداد وتطوير النظام:</span>
             <span style="font-size: 16px; font-weight: bold; color: #ffeb3b;">م. فادي محمود</span>
-            <span style="font-size: 12px; color: #e8f5e9; display: block;">إدارة الصيانة والتشغيل</span>
+            <span style="font-size: 12px; color: #e8f5e9; display: block;">مسؤول قسم الصيانة والأتمتة</span>
         </div>
     </div>
 </div>
@@ -289,21 +282,21 @@ with gr.Blocks(title="منصة الصيانة الهندسية - مسلخ عزي
     gr.HTML(HEADER_HTML)
     
     with gr.Row():
-        status_box = gr.Markdown(f"📊 **حالة النظام:** تم تحميل وفهرسة `{total_manuals}` كتالوج فني بالكامل ومزامنة صور المستودع.")
+        status_box = gr.Markdown(f"📊 **حالة النظام:** مفهرس `{total_manuals}` كتالوج بالكامل ومطابقة أرقام القطع المكونة من 4 مقاطع.")
         
     with gr.Row():
         with gr.Column(scale=1):
             query_input = gr.Textbox(
-                label="أدخل رقم القطعة / رمز الإنذار / المنظومة",
-                placeholder="أمثلة: E002 انذار ماكينة التغليف | 0115.D276.000.07 | ضاغط التبريد | Scalder",
+                label="أدخل رقم القطعة (4 مقاطع) أو كود الإنذار",
+                placeholder="أمثلة: 0990.AD05.007.00 أو 89.3844.900.0034 أو 89 3608 904 0096 أو E002",
                 lines=2
             )
-            image_input = gr.Image(type="pil", label="أو ارفع صورة القطعة مباشرة للتعرف عليها")
+            image_input = gr.Image(type="pil", label="صورة القطعة الميدانية (اختياري)")
             submit_btn = gr.Button("فحص وتشخيص العطل / مطابقة القطعة 🔍", variant="primary")
-            clear_btn = gr.Button("مسح")
+            clear_btn = gr.Button("مسح الحقول")
             
         with gr.Column(scale=1):
-            output_box = gr.Markdown(label="تقرير الفحص الفني")
+            output_box = gr.Markdown(label="تقرير الفحص الفني والمطابقة")
             matched_img_output = gr.Image(type="filepath", label="صورة القطعة المطابقة من أرشيف المستودع")
             
     submit_btn.click(
