@@ -292,15 +292,23 @@ def maintenance_copilot(query, input_image=None):
     if matched_image_path:
         response.append("\n🖼️ **تم إرفاق صورة القطعة الحقيقية من أرشيف المستودع الميداني أدناه.**")
 
-    # إشعار الواتساب
+   # إشعار الواتساب التلقائي (يعمل مع الصور، أرقام القطع، وبلاغات الأعطال)
     tz = pytz.timezone('Asia/Hebron')
     timestamp = datetime.now(tz).strftime('%Y-%m-%d %I:%M %p')
-    if any(k in clean_q.lower() for k in ["عطل", "مشكله", "مشكلة", "انذار", "إنذار", "تالف", "كسر", "alarm"]):
-        alert_msg = f"⚠️ *بلاغ صيانة ميداني*\n⏰ الوقت: {timestamp}\n📝 الطلب: {clean_q}\n"
-        if hits:
-            alert_msg += f"📖 المرجع: {hits[0]['filename']} (صفحة {hits[0]['page']})"
-        send_whatsapp_alert(alert_msg)
-        response.append("\n---\n📲 تم إرسال إشعار فوري لمجموعة طاقم الصيانة عبر الواتساب.")
+
+    # تجهيز رسالة التنبيه الشاملة
+    alert_msg = f"🔔 *إشعار صيانة ومطابقة - مسلخ عزيزا*\n"
+    alert_msg += f"⏰ الوقت: {timestamp}\n"
+    alert_msg += f"🔍 الاستعلام / رقم القطعة: `{clean_q}`\n"
+    
+    if hits:
+        alert_msg += f"📖 المرجع الفني: {hits[0]['filename']} (صفحة {hits[0]['page']})\n"
+    if matched_image_path:
+        alert_msg += f"🖼️ الحالة: تم استخراج صورة مطابقة من أرشيف المستودع."
+
+    # إرسال فوري دون أي شروط مسبقة
+    send_whatsapp_alert(alert_msg)
+    response.append("\n---\n📲 تم إرسال إشعار فوري لطاقم الصيانة عبر الواتساب.")
 
     return "\n".join(response), matched_image_path
 
