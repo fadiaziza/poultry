@@ -8,6 +8,7 @@ import requests
 from datetime import datetime
 import pytz
 from PIL import Image
+import imagehash
 import gradio as gr
 from google.cloud import storage
 
@@ -48,8 +49,6 @@ sync_data_from_gcs()
 # 1. إعدادات تنبيهات الواتساب (Green-API)
 # ==========================================
 ID_INSTANCE = "710722737613"
-
-# ⚠️ أدخل هنا التوكن ومعرف الواتساب الخاص بك:
 API_TOKEN_INSTANCE = os.environ.get("GREEN_API_TOKEN", "YOUR_GREEN_API_TOKEN_HERE")
 ALERT_GROUP_ID = os.environ.get("ALERT_GROUP_ID", "YOUR_PHONE_OR_GROUP_HERE") 
 
@@ -70,7 +69,7 @@ def send_whatsapp_alert(message):
         print(f"[!] WhatsApp notification error: {err}")
 
 # ==========================================
-# 2. فهرسة صفحات الكتالوجات وربط صور المستودع
+# 2. فهرسة صفحات الكتالوجات وبصمات صور المستودع
 # ==========================================
 manual_pages = []
 
@@ -97,16 +96,34 @@ def build_manual_index():
 
 build_manual_index()
 
-# ربط صور المستودع بالرموز (Lookup خفيف وسريع بدون استهلاك RAM)
+# بناء فهرس بصري خفيف وسريع للصور باستخدام Image Hashing
+image_hashes = {}
 part_images_map = {}
-if os.path.exists(IMAGE_DIR):
+
+def build_image_hash_index():
+    global image_hashes, part_images_map
+    image_hashes = {}
+    part_images_map = {}
+    if not os.path.exists(IMAGE_DIR):
+        return
+    valid_exts = ('.jpg', '.jpeg', '.png', '.JPG', '.PNG')
     for f in os.listdir(IMAGE_DIR):
-        if f.lower().endswith(('.jpg', '.jpeg', '.png')):
+        if f.endswith(valid_exts):
             part_no = os.path.splitext(f)[0]
             clean_k = re.sub(r'[^a-zA-Z0-9]', '', part_no).lower()
-            part_images_map[clean_k] = (part_no, os.path.join(IMAGE_DIR, f))
+            img_path = os.path.join(IMAGE_DIR, f)
+            part_images_map[clean_k] = (part_no, img_path)
+            try:
+                with Image.open(img_path) as img:
+                    h = imagehash.dhash(img.convert('RGB'))
+                    image_hashes[part_no] = (h, img_path)
+            except Exception:
+                pass
+    print(f"[✓] Indexed {len(image_hashes)} parts with visual hashes.")
 
-# قراءة الشعار المحلي logo.png وتحويله إلى Base64
+build_image_hash_index()
+
+# قراءة الشعار المحلي المعتمد logo.png
 logo_base64 = ""
 for p in ["logo.png", "/app/logo.png"]:
     if os.path.exists(p):
@@ -118,18 +135,39 @@ for p in ["logo.png", "/app/logo.png"]:
             pass
 
 # ==========================================
-# 3. محرك البحث والتشخيص الصارم (بدون تخمين)
+# 3. محرك المطابقة البصرية والبحث الصارم
 # ==========================================
+def match_uploaded_image(uploaded_pil_img, max_distance=12):
+    """مقارنة بصمة الصورة المرفوعة مع صور المستودع الميداني"""
+    if uploaded_pil_img is None or not image_hashes:
+        return None, None
+    try:
+        if not hasattr(uploaded_pil_img, 'convert'):
+            uploaded_pil_img = Image.fromarray(uploaded_pil_img)
+        uploaded_hash = imagehash.dhash(uploaded_pil_img.convert('RGB'))
+        
+        best_match = None
+        min_dist = float('inf')
+        for part_no, (h, path) in image_hashes.items():
+            dist = uploaded_hash - h
+            if dist < min_dist:
+                min_dist = dist
+                best_match = (part_no, path)
+                
+        if min_dist <= max_distance:
+            return best_match[0], best_match[1]
+    except Exception as e:
+        print(f"[!] Visual match error: {e}")
+    return None, None
+
 def find_image_for_part(query_text):
-    """جلب صورة القطعة المطابقة من أرشيف المستودع"""
+    """جلب صورة القطعة المطابقة من أرشيف المستودع بالاسم"""
     if not query_text or not part_images_map:
         return None
-        
     clean_target = re.sub(r'[^a-zA-Z0-9]', '', query_text).lower()
     if clean_target in part_images_map:
         return part_images_map[clean_target][1]
 
-    # مطابقة على مستوى المقاطع المستخرجة
     tokens = re.findall(r'[A-Za-z0-9]{4,}', query_text)
     for tok in tokens:
         c_tok = tok.lower()
@@ -139,13 +177,11 @@ def find_image_for_part(query_text):
     for k, v in part_images_map.items():
         if len(k) >= 6 and (k in clean_target or clean_target in k):
             return v[1]
-            
     return None
 
 def search_engine(query, top_k=5):
     if not manual_pages:
         return [], None
-        
     clean_q = query.strip()
     
     # 1. فحص كود القطعة المكون من 4 مقاطع (نقاط أو مسافات أو شرطات)
@@ -167,7 +203,6 @@ def search_engine(query, top_k=5):
                 pattern = rf'\b(E|Alarm|Error)\s*0*{num}\b'
                 matched = [p for p in manual_pages if re.search(pattern, p["text"], re.IGNORECASE)]
                 if matched:
-                    # إذا ذُكرت ماكينة التغليف، تُعطى الأولوية لكتالوج Automac
                     if any(k in clean_q for k in ["تغليف", "automac", "fabbri"]):
                         matches_sorted = sorted(matched, key=lambda x: any(k in x["filename"].lower() for k in ["automac", "297", "298"]), reverse=True)
                         return matches_sorted[:top_k], a.upper()
@@ -188,7 +223,6 @@ def search_engine(query, top_k=5):
             pool = [p for p in manual_pages if any(f in p["filename"].lower() for f in cat_filters)]
             if not pool:
                 pool = manual_pages
-            
             scored = []
             for p in pool:
                 score = sum(1 for t in terms if re.search(r'\b' + re.escape(t) + r'\b', p["text"], re.IGNORECASE))
@@ -198,7 +232,7 @@ def search_engine(query, top_k=5):
             if scored:
                 return [x[1] for x in scored[:top_k]], ar_word
 
-    # 4. مطابقة مباشرة لأي كلمة إنجليزية أو رقم يدخله الفني
+    # 4. مطابقة مباشرة لأي رمز أو كلمة
     eng_tokens = re.findall(r'[A-Za-z0-9]{3,}', clean_q)
     for tok in eng_tokens:
         pat = r'\b' + re.escape(tok) + r'\b'
@@ -209,19 +243,33 @@ def search_engine(query, top_k=5):
     return [], None
 
 def maintenance_copilot(query, input_image=None):
-    if not query.strip() and input_image is None:
-        return "⚠️ يرجى إدخال رقم القطعة (4 مقاطع)، كود الإنذار (مثل E002)، أو وصف العطل.", None
-        
-    clean_q = query.strip()
-    hits, matched_term = search_engine(clean_q, top_k=4)
-    matched_image_path = find_image_for_part(matched_term if matched_term else clean_q)
+    clean_q = query.strip() if query else ""
+    matched_image_path = None
     response = []
+
+    # معالجة الصورة المرفوعة والمطابقة البصرية
+    if input_image is not None:
+        matched_part_no, matched_img = match_uploaded_image(input_image)
+        if matched_part_no:
+            response.append(f"📸 **تم التعرف بصرياً على صورة القطعة:** `{matched_part_no}`")
+            matched_image_path = matched_img
+            if not clean_q:
+                clean_q = matched_part_no
+        else:
+            if not clean_q:
+                return "❌ لم يتم العثور على صورة متطابقة بصرياً مع قطع المستودع المفهرسة. يرجى إدخال رقم القطعة كتابةً.", None
+
+    if not clean_q:
+        return "⚠️ يرجى إدخال رقم القطعة (4 مقاطع)، كود الإنذار (مثل E002)، أو رفع صورة القطعة.", None
+
+    hits, matched_term = search_engine(clean_q, top_k=4)
+    if not matched_image_path:
+        matched_image_path = find_image_for_part(matched_term if matched_term else clean_q)
 
     if hits:
         response.append(f"### ✅ تم العثور على مراجع مطابقة في الكتالوجات:")
         for h in hits:
             response.append(f"- **الملف:** `{h['filename']}` (صفحة {h['page']})")
-            
             text = h['text'].replace("\r", "")
             target = matched_term if matched_term else clean_q
             idx = text.lower().find(target.lower().split()[0])
@@ -239,7 +287,7 @@ def maintenance_copilot(query, input_image=None):
     if matched_image_path:
         response.append("\n🖼️ **تم إرفاق صورة القطعة الحقيقية من أرشيف المستودع الميداني أدناه.**")
 
-    # إرسال تنبيه الواتساب عند وجود بلاغات الأعطال
+    # إشعار الواتساب
     tz = pytz.timezone('Asia/Hebron')
     timestamp = datetime.now(tz).strftime('%Y-%m-%d %I:%M %p')
     if any(k in clean_q.lower() for k in ["عطل", "مشكله", "مشكلة", "انذار", "إنذار", "تالف", "كسر", "alarm"]):
@@ -292,7 +340,7 @@ with gr.Blocks(title="منصة الصيانة الهندسية - مسلخ عزي
                 placeholder="أمثلة: انذار E002 ماكينة التغليف | مشكله ماكينه المايسترو | 0990.AD05.007.00 | 89 3608 904 0096",
                 lines=2
             )
-            image_input = gr.Image(type="pil", label="صورة القطعة الميدانية (اختياري)")
+            image_input = gr.Image(type="pil", label="أو ارفع صورة القطعة للتعرف البصري عليها ومطابقتها")
             submit_btn = gr.Button("فحص وتشخيص العطل / مطابقة القطعة 🔍", variant="primary")
             clear_btn = gr.Button("مسح الحقول")
             
