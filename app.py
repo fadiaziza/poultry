@@ -430,86 +430,66 @@ def maintenance_copilot(query, input_image=None):
 
     return "\n".join(response), matched_image_path, catalog_page_path
 
-# ==========================================
-# 6. واجهة المستخدم المتقدمة مع التعرف الصوتي
-# ==========================================
-total_manuals = len(glob.glob(os.path.join(BASE_DIR, "**/*.pdf"), recursive=True))
-
-logo_html = f'<img src="data:image/png;base64,{logo_base64}" style="width: 100%; height: 100%; object-fit: contain;">' if logo_base64 else '<span style="font-size: 20px; font-weight: 900; color: #1b5e20;">عزيزا</span>'
-
-HEADER_HTML = f"""
-<div style="background: linear-gradient(135deg, #0b3d20 0%, #1b5e20 100%); padding: 18px 25px; border-radius: 14px; color: white; margin-bottom: 20px; box-shadow: 0 4px 15px rgba(0,0,0,0.18); direction: rtl; text-align: right; border-bottom: 4px solid #ffcc00;">
-    <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 15px;">
-        <div style="display: flex; align-items: center; gap: 20px;">
-            <div style="background: #ffffff; border-radius: 50%; padding: 4px; box-shadow: 0 4px 12px rgba(0,0,0,0.3); display: flex; align-items: center; justify-content: center; width: 85px; height: 85px; border: 3px solid #ffcc00; overflow: hidden;">
-                {logo_html}
-            </div>
-            <div>
-                <h1 style="margin: 0; font-size: 23px; font-weight: 800; color: #ffffff;">شركة دواجن فلسطين - مسلخ عزيزا</h1>
-                <p style="margin: 4px 0 0 0; font-size: 14px; color: #e8f5e9;">نظام الصيانة والتشخيص الهندسي الدقيق (خطوط Meyn • ماكينات التغليف Automac • منظومات التبريد)</p>
-            </div>
-        </div>
-        <div style="border-right: 2px solid rgba(255,255,255,0.25); padding-right: 20px;">
-            <span style="font-size: 12px; color: #c8e6c9; display: block;">إعداد وتطوير النظام:</span>
-            <span style="font-size: 16px; font-weight: bold; color: #ffeb3b;">م. فادي محمود</span>
-            <span style="font-size: 12px; color: #e8f5e9; display: block;">مسؤول قسم الصيانة والأتمتة</span>
-        </div>
-    </div>
-</div>
-"""
-
 VOICE_HTML = """
-<script>
-function startAzizaVoice() {
-    var SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-        alert("المتصفح لا يدعم ميزة التحدث الصوتي المباشر، يرجى فتح الموقع من متصفح Google Chrome.");
-        return;
-    }
-    var recognition = new SpeechRecognition();
-    recognition.lang = 'ar-SA';
-    recognition.interimResults = false;
-    
-    var btn = document.getElementById('voice_button');
-    if(btn) { 
-        btn.innerText = "🔴 جاري الاستماع لصوتك... تحدث الآن"; 
-        btn.style.backgroundColor = "#c62828"; 
-    }
-    
-    recognition.onresult = function(event) {
-        var transcript = event.results[0][0].transcript;
-        var textareas = document.querySelectorAll('textarea');
-        if(textareas.length > 0) {
-            textareas[0].value = transcript;
-            textareas[0].dispatchEvent(new Event('input', { bubbles: true }));
-        }
-        if(btn) { 
-            btn.innerText = "🎤 اضغط هنا للتحدث بالصوت (للأيدي المشغولة)"; 
-            btn.style.backgroundColor = "#2e7d32"; 
-        }
-    };
-    recognition.onerror = function() {
-        if(btn) { 
-            btn.innerText = "🎤 اضغط هنا للتحدث بالصوت (للأيدي المشغولة)"; 
-            btn.style.backgroundColor = "#2e7d32"; 
-        }
-    };
-    recognition.onend = function() {
-        if(btn) { 
-            btn.innerText = "🎤 اضغط هنا للتحدث بالصوت (للأيدي المشغولة)"; 
-            btn.style.backgroundColor = "#2e7d32"; 
-        }
-    };
-    recognition.start();
-}
-</script>
 <div style="text-align: center; margin-bottom: 12px;">
-    <button id="voice_button" onclick="startAzizaVoice()" style="background-color: #2e7d32; color: #ffffff; border: none; padding: 12px 28px; font-size: 15px; font-weight: bold; border-radius: 30px; cursor: pointer; box-shadow: 0 4px 10px rgba(0,0,0,0.25); transition: all 0.3s;">
+    <button id="aziza_mic_btn" type="button" style="background-color: #2e7d32; color: #ffffff; border: none; padding: 12px 28px; font-size: 15px; font-weight: bold; border-radius: 30px; cursor: pointer; box-shadow: 0 4px 10px rgba(0,0,0,0.25);">
         🎤 اضغط هنا للتحدث بالصوت (للأيدي المشغولة)
     </button>
 </div>
-"""
 
+<script>
+function attachMicHandler() {
+    var btn = document.getElementById('aziza_mic_btn');
+    if (!btn) return;
+
+    btn.onclick = function() {
+        var SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (!SpeechRecognition) {
+            alert("يرجى فتح الرابط من متصفح Google Chrome على الهاتف أو الكمبيوتر لتفعيل ميزة الصوت.");
+            return;
+        }
+
+        var recognition = new SpeechRecognition();
+        recognition.lang = 'ar-SA';
+        recognition.interimResults = false;
+        recognition.maxAlternatives = 1;
+
+        btn.innerText = "🔴 جاري الاستماع... تحدث الآن";
+        btn.style.backgroundColor = "#c62828";
+
+        recognition.onresult = function(event) {
+            var text = event.results[0][0].transcript;
+            var inputArea = document.querySelector('textarea');
+            if (inputArea) {
+                inputArea.value = text;
+                inputArea.dispatchEvent(new Event('input', { bubbles: true }));
+            }
+            btn.innerText = "🎤 اضغط هنا للتحدث بالصوت (للأيدي المشغولة)";
+            btn.style.backgroundColor = "#2e7d32";
+        };
+
+        recognition.onerror = function(e) {
+            console.error("Speech recognition error:", e.error);
+            btn.innerText = "🎤 اضغط هنا للتحدث بالصوت (للأيدي المشغولة)";
+            btn.style.backgroundColor = "#2e7d32";
+            if (e.error === 'not-allowed') {
+                alert("يرجى إعطاء الإذن للمتصفح بالوصول إلى الميكروفون.");
+            }
+        };
+
+        recognition.onend = function() {
+            btn.innerText = "🎤 اضغط هنا للتحدث بالصوت (للأيدي المشغولة)";
+            btn.style.backgroundColor = "#2e7d32";
+        };
+
+        recognition.start();
+    };
+}
+
+// تشغيل المستمع بمجرد اكتمال تحميل الصفحة
+setTimeout(attachMicHandler, 1500);
+</script>
+"""
 with gr.Blocks(title="منصة الصيانة الهندسية - مسلخ عزيزا") as demo:
     gr.HTML(HEADER_HTML)
     gr.HTML(VOICE_HTML)
