@@ -1,690 +1,620 @@
 import os
-import glob
 import re
 import io
-import base64
-import fitz  # PyMuPDF
-import requests
-from datetime import datetime
-import pytz
-from PIL import Image, ImageStat
+import json
+import glob
+import logging
+from typing import Dict, List, Optional, Tuple
+
+import fitz
 import gradio as gr
+import requests
+from PIL import Image
 from google.cloud import storage
 
-# ==========================================
-# 0. إعدادات السحابة والمنفذ والمجلدات
-# ==========================================
-PORT = int(os.environ.get("PORT", 8080))
-BUCKET_NAME = "aziza-manuals-storage"
-BASE_DIR = "/tmp/Maintenance_Manuals"
-IMAGE_DIR = os.path.join(BASE_DIR, "Real_Parts_Images")
+# Optional semantic search. The app still works if the model cannot be loaded.
+try:
+    from sentence_transformers import SentenceTransformer, util
+except Exception:
+    SentenceTransformer = None
+    util = None
 
-def sync_data_from_gcs():
-    os.makedirs(BASE_DIR, exist_ok=True)
-    os.makedirs(IMAGE_DIR, exist_ok=True)
-    print(f"[*] جاري مزامنة الملفات والكتالوجات من Google Cloud Storage: {BUCKET_NAME}...")
+# ============================================================
+# AZIZA AI MAINTENANCE COPILOT
+# GitHub = code | Google Cloud Storage = company data
+# ============================================================
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("aziza-maintenance")
+
+PORT = int(os.getenv("PORT", "7860"))
+BUCKET_NAME = os.getenv("GCS_BUCKET_NAME", "aziza-manuals-storage")
+GCS_PREFIX = os.getenv("GCS_PREFIX", "Maintenance_Manuals").strip("/")
+BASE_DIR = os.getenv("LOCAL_DATA_DIR", "/tmp/Maintenance_Manuals")
+IMAGE_DIR = os.path.join(BASE_DIR, "Real_Parts_Images")
+ALARM_DIR = os.path.join(BASE_DIR, "alarms")
+CACHE_DIR = os.path.join(BASE_DIR, ".cache")
+MANIFEST_FILE = os.path.join(CACHE_DIR, "gcs_manifest.json")
+
+# Multilingual model: Arabic + English maintenance descriptions.
+EMBEDDING_MODEL_NAME = os.getenv(
+    "EMBEDDING_MODEL_NAME", "paraphrase-multilingual-MiniLM-L12-v2"
+)
+ENABLE_SEMANTIC_SEARCH = os.getenv("ENABLE_SEMANTIC_SEARCH", "true").lower() == "true"
+SEMANTIC_TOP_K = int(os.getenv("SEMANTIC_TOP_K", "5"))
+
+# Optional Green-API WhatsApp notification. NEVER put these values in GitHub.
+GREEN_API_ID = os.getenv("GREEN_API_ID")
+GREEN_API_TOKEN = os.getenv("GREEN_API_TOKEN")
+ALERT_GROUP_ID = os.getenv("ALERT_GROUP_ID")
+
+for directory in (BASE_DIR, IMAGE_DIR, ALARM_DIR, CACHE_DIR):
+    os.makedirs(directory, exist_ok=True)
+
+manual_pages: List[dict] = []
+part_images_map: Dict[str, str] = {}
+troubleshooting_kb: Dict[str, dict] = {}
+embedding_model = None
+manual_embeddings = None
+
+DEFAULT_TROUBLESHOOTING_KB = {
+    "E002": {
+        "title": "Tray Infeed Jam",
+        "machine": "Automac 75/297",
+        "causes": [
+            "وجود انحشار في الصينية أو المنتج عند منطقة الإدخال.",
+            "عدم محاذاة الصينية أو الأدلة الجانبية.",
+            "وجود عائق ميكانيكي.",
+            "عدم عمل حساس الإدخال أو اتساخه أو عدم محاذاته.",
+        ],
+        "remedies": [
+            "إيقاف الماكينة حسب إجراء السلامة المعتمد.",
+            "إزالة سبب الانحشار.",
+            "فحص محاذاة الصينية والأدلة.",
+            "تنظيف وفحص الحساسات.",
+            "تشغيل الماكينة بسرعة منخفضة والتأكد من التغذية الطبيعية.",
+        ],
+    },
+    "E004": {
+        "title": "Film Reel Empty / Broken",
+        "machine": "Automac",
+        "causes": [
+            "بكرة الفيلم فارغة.",
+            "انقطاع الفيلم.",
+            "خطأ في مسار الفيلم أو الشد.",
+            "اتساخ أو سوء محاذاة حساس الفيلم.",
+        ],
+        "remedies": [
+            "فحص بكرة الفيلم واستبدالها عند الحاجة.",
+            "إعادة تركيب أو توصيل الفيلم.",
+            "فحص شد ومسار الفيلم.",
+            "تنظيف وفحص حساس الفيلم.",
+        ],
+    },
+    "E014": {
+        "title": "Sealing Belt Temperature Fault",
+        "machine": "Automac",
+        "causes": [
+            "درجة حرارة سير اللحام خارج القيمة المضبوطة.",
+            "مشكلة في عنصر التسخين.",
+            "مشكلة في حساس الحرارة.",
+            "خلل في الكنترول أو التوصيلات.",
+        ],
+        "remedies": [
+            "فحص Setpoint درجة الحرارة.",
+            "فحص عنصر التسخين.",
+            "فحص حساس الحرارة والأسلاك.",
+            "فحص خرج وحدة التحكم.",
+        ],
+    },
+    "MAESTRO": {
+        "title": "Meyn Maestro Eviscerator",
+        "machine": "Meyn Maestro",
+        "causes": [
+            "عدم ضبط ماكينة نزع الأحشاء.",
+            "تآكل أو عدم محاذاة أجزاء ميكانيكية.",
+            "مشكلة في وضع المنتج.",
+            "وجود اتساخ أو جسم غريب.",
+        ],
+        "remedies": [
+            "إيقاف الماكينة حسب إجراءات السلامة.",
+            "فحص الأدلة والأجزاء العاملة.",
+            "فحص المحاذاة والضبط.",
+            "تنظيف المنطقة وفحص التآكل.",
+        ],
+    },
+    "رياشة": {
+        "title": "Plucker",
+        "machine": "Plucker",
+        "causes": [
+            "تآكل أو تلف أصابع الرياشة.",
+            "ضبط غير صحيح.",
+            "مشكلة في المياه أو التدفق.",
+            "عائق ميكانيكي.",
+        ],
+        "remedies": [
+            "فحص أصابع الرياشة.",
+            "فحص الضبط ودخول المنتج.",
+            "فحص مصدر وتدفق المياه.",
+            "فحص الحركة والأجزاء الميكانيكية.",
+        ],
+    },
+    "قوانص": {
+        "title": "Gizzard Peeler",
+        "machine": "Meyn CD-6000",
+        "causes": [
+            "ضبط غير صحيح.",
+            "تآكل السكين أو الرولات.",
+            "مشكلة في وضع المنتج.",
+            "اتساخ أو جسم غريب.",
+        ],
+        "remedies": [
+            "فحص مجموعة التقشير.",
+            "فحص حالة السكين والرولات.",
+            "فحص الضبط.",
+            "تنظيف الماكينة وفحصها قبل التشغيل.",
+        ],
+    },
+}
+
+ARABIC_MACHINE_TERMS = {
+    "مايسترو": ["MAESTRO", "MEYN"],
+    "رياشة": ["PLUCKER"],
+    "سمط": ["SCALDER", "SCALDING"],
+    "قوانص": ["GIZZARD", "CD-6000"],
+    "تغليف": ["AUTOMAC", "PACKAGING"],
+    "تبريد": ["REFRIGERATION", "CHILLER", "COOLING"],
+    "كمبرسور": ["COMPRESSOR"],
+}
+
+
+def normalize_text(value: str) -> str:
+    if value is None:
+        return ""
+    value = str(value).upper().strip()
+    value = value.replace("أ", "ا").replace("إ", "ا").replace("آ", "ا")
+    value = value.replace("ى", "ي").replace("ة", "ه")
+    return re.sub(r"[^A-Z0-9\u0600-\u06FF]+", "", value)
+
+
+def normalize_part(value: str) -> str:
+    if value is None:
+        return ""
+    return re.sub(r"[^A-Z0-9]", "", str(value).upper())
+
+
+def safe_filename(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", value)
+
+
+def sync_data_from_gcs() -> bool:
+    """Download GCS data into /tmp without putting company files in GitHub."""
     try:
         client = storage.Client()
         bucket = client.bucket(BUCKET_NAME)
-        blobs = bucket.list_blobs(prefix="Maintenance_Manuals/")
-        
-        count = 0
+        blobs = list(bucket.list_blobs(prefix=f"{GCS_PREFIX}/"))
+        manifest = {}
+        try:
+            with open(MANIFEST_FILE, "r", encoding="utf-8") as f:
+                manifest = json.load(f)
+        except Exception:
+            manifest = {}
+
+        downloaded = 0
         for blob in blobs:
-            if blob.name.endswith("/"):
+            relative = blob.name[len(GCS_PREFIX):].lstrip("/")
+            if not relative or blob.name.endswith("/"):
                 continue
-            relative_path = os.path.relpath(blob.name, "Maintenance_Manuals")
-            dest_path = os.path.join(BASE_DIR, relative_path)
-            os.makedirs(os.path.dirname(dest_path), exist_ok=True)
-            if not os.path.exists(dest_path):
-                blob.download_to_filename(dest_path)
-                count += 1
-        print(f"[✓] تمت المزامنة بنجاح. تم تحميل {count} ملفاً.")
-    except Exception as e:
-        print(f"[!] تحذير أثناء المزامنة: {e}")
 
-sync_data_from_gcs()
+            local_path = os.path.join(BASE_DIR, relative)
+            os.makedirs(os.path.dirname(local_path), exist_ok=True)
+            remote_signature = f"{blob.generation}:{blob.size}:{blob.updated}"
+            previous = manifest.get(blob.name)
 
-# ==========================================
-# 1. إعدادات تنبيهات الواتساب المباشرة (Green-API)
-# ==========================================
-ID_INSTANCE = "710722737613"
-API_TOKEN_INSTANCE = "8902219901b2411cb1ebfa944bbfc3d7d499d671111c4fe18e"
-ALERT_GROUP_ID = "970599431267@c.us"
+            if previous != remote_signature or not os.path.exists(local_path):
+                blob.download_to_filename(local_path)
+                downloaded += 1
 
-def send_whatsapp_alert(message):
-    if not API_TOKEN_INSTANCE or "YOUR_GREEN_API" in API_TOKEN_INSTANCE:
-        return
-    if not ALERT_GROUP_ID or "YOUR_PHONE" in ALERT_GROUP_ID:
-        return
+            manifest[blob.name] = remote_signature
 
-    url = f"https://api.green-api.com/waInstance{ID_INSTANCE}/sendMessage/{API_TOKEN_INSTANCE}"
-    payload = {"chatId": ALERT_GROUP_ID, "message": message}
-    try:
-        requests.post(url, json=payload, timeout=6)
-    except Exception as err:
-        print(f"[!] خطأ في إرسال الواتساب: {err}")
+        with open(MANIFEST_FILE, "w", encoding="utf-8") as f:
+            json.dump(manifest, f, ensure_ascii=False, indent=2)
 
-# ==========================================
-# 2. جداول كشف الأعطال والإنذارات الفنية بالعربية
-# ==========================================
-TROUBLESHOOTING_KB = {
-    "E002": {
-        "title": "إنذار E002 - انحشار / عدم تغذية صواني التغليف (Tray Infeed Jam)",
-        "machine": "ماكينة التغليف Automac 75 / 297",
-        "causes": [
-            "اتساخ أو انحراف محاذاة حساس دخول الصواني الفوتوسيل (Photocell).",
-            "انحشار صينية عند بوابة السحب أو تباعد غير منتظم للصواني القادمة من خط التعبئة.",
-            "خلل في شوط أو تزامن دافع الصواني الميكانيكي (Pusher Arm)."
-        ],
-        "remedy": [
-            "تنظيف عدسة حساس الدخول بقطعة قماش ناعمة وجافة والتأكد من محاذاة العاكس.",
-            "إزالة أي صينية منحشرة بالمسار والتأكد من حركة الناقل بسلاسة.",
-            "إعادة ضبط الحساس ومراقبة إشارة الاستشعار، ثم تصفير الإنذار من شاشة التحكم."
-        ]
-    },
-    "E004": {
-        "title": "إنذار E004 - انتهاء أو انقطاع فيلم التغليف (Film Reel Empty / Broken)",
-        "machine": "ماكينة التغليف Automac",
-        "causes": [
-            "نفاد رول فيلم التغليف في الحامل السفلي بالكامل.",
-            "تمزق الفيلم نتيجة شد مفرط أو عائق على بكرات التوجيه الجانبية.",
-            "عدم قفل ذراع تثبيت الرول بإحكام."
-        ],
-        "remedy": [
-            "تركيب رول فيلم جديد وتمريره وفق المسار الهندسي المحدد بالملصق التوضيحي.",
-            "فحص مرونة دوران بكرات الشد وضبط عيار ضغط الشداد لتفادي القطع المفاجئ."
-        ]
-    },
-    "E014": {
-        "title": "إنذار E014 - حرارة حزام اللحام السفلي خارج النطاق (Sealing Belt Temp Fault)",
-        "machine": "ماكينة التغليف Automac",
-        "causes": [
-            "تلف مقاومة التسخين السفلية أو قراءة غير دقيقة للثرموكابل (Thermocouple).",
-            "فصل القاطع الحراري أو فيوز قدرة وحدة التسخين داخل لوحة التحكم الكهربائية."
-        ],
-        "remedy": [
-            "قياس حرارة سطح اللحام بجهاز خارجي ومقارنتها بقراءة شاشة التشغيل.",
-            "فحص التوصيلات الكهربائية لفيوزات وحدة التسخين وإعادة تصفير الإنذار."
-        ]
-    },
-    "مايسترو": {
-        "title": "استكشاف أعطال جهاز تفريغ الأحشاء وفتح البطن (Meyn Maestro Eviscerator)",
-        "machine": "خط التجهيز Meyn Maestro",
-        "causes": [
-            "تمزق الكبد أو المرارة: عدم تناسب ارتفاع شوكة الاستخراج (Drawing Spoon) مع متوسط أوزان القطيع.",
-            "عدم ثبات الطيور: تآكل أو اتساخ مرابط التعليق (Shackles) أو انحراف سكة التوجيه المركزية.",
-            "خلل في زمن الفتح: ضعف نوابض الترجيع (Springs) أو تآكل عجلات الكامة (Cam Followers)."
-        ],
-        "remedy": [
-            "إعادة معايرة الارتفاع المركزي لوحدات Maestro وفق جدول متوسط أوزان القطيع اليومي.",
-            "فحص نوابض الترجيع وعجلات الكامات واستبدال الأجزاء المستلكة لضمان الحركة المتزنة.",
-            "التأكد من انتظام ضغط خط غسيل وتزييت الشوكات أثناء الدوران المستمر."
-        ]
-    },
-    "رياشة": {
-        "title": "مشاكل نتف وترييش الدواجن (Plucker / Picker)",
-        "machine": "قسم الذبح والترييش Meyn",
-        "causes": [
-            "بقاء الريش: تآكل أصابع النتف المطاطية، أو انخفاض حرارة حوض السمط (Scalder).",
-            "تمزق الجلد أو كسر الأجنحة: تقارب مفرط لبنوك الأصابع أو سرعة دوران زائدة."
-        ],
-        "remedy": [
-            "استبدال الأصابع المطاطية المكسورة والمتآكلة في جميع الديسكات فوراً.",
-            "معايرة حرارة مياه السمط وثبات دورة الماء.",
-            "ضبط مسافة بنوك الترييش لتتلامس أطراف الأصابع فقط مع ريش الطير دون صدمه."
-        ]
-    },
-    "قوانص": {
-        "title": "استكشاف أعطال ماكينة نزع دهون وقشور القوانص (Gizzard Peeler)",
-        "machine": "ماكينة نزع قشور القوانص Meyn CD-6000",
-        "causes": [
-            "عدم تقشير القوانص بالكامل: تآكل أسنان درافيل التقشير (Peeling Rollers) أو ضعف تدفق مياه الغسيل.",
-            "انحشار القوانص عند المدخل: عدم ضبط المسافة البينية بين الدرافيل بدقة."
-        ],
-        "remedy": [
-            "فحص درافيل التقشير وتنظيف مجاري الأسنان من أي مخلفات متراكمة.",
-            "التحقق من ضغط رشاشات المياه الموجهة على منطقة التقشير.",
-            "ضبط خلوص درافيل السحب وفق قياسات كتالوج التشغيل المعتمد."
-        ]
-    }
-}
+        logger.info("GCS sync: %d objects, %d downloaded", len(blobs), downloaded)
+        return True
+    except Exception as exc:
+        logger.exception("GCS sync failed: %s", exc)
+        return False
 
-# ==========================================
-# 3. فهرسة صفحات الكتالوجات وتحويلها لصور
-# ==========================================
-manual_pages = []
 
-def build_manual_index():
+def load_alarm_database() -> Dict[str, dict]:
+    kb = {k.upper(): v for k, v in DEFAULT_TROUBLESHOOTING_KB.items()}
+    for path in glob.glob(os.path.join(ALARM_DIR, "*.json")):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                for key, value in data.items():
+                    if isinstance(value, dict):
+                        kb[str(key).upper()] = value
+            elif isinstance(data, list):
+                for item in data:
+                    if isinstance(item, dict):
+                        code = item.get("code") or item.get("alarm") or item.get("id")
+                        if code:
+                            kb[str(code).upper()] = item
+        except Exception as exc:
+            logger.warning("Alarm JSON failed: %s", exc)
+    return kb
+
+
+def build_manual_index() -> None:
     global manual_pages
     manual_pages = []
-    pdf_files = glob.glob(os.path.join(BASE_DIR, "**/*.pdf"), recursive=True)
-    print(f"[*] جاري فهرسة {len(pdf_files)} كتالوج فني...")
-    for pdf_path in pdf_files:
-        filename = os.path.basename(pdf_path)
+    for filepath in glob.glob(os.path.join(BASE_DIR, "**", "*.pdf"), recursive=True):
         try:
-            doc = fitz.open(pdf_path)
-            for page_num in range(len(doc)):
-                page_text = doc[page_num].get_text("text").strip()
-                if len(page_text) > 15:
+            doc = fitz.open(filepath)
+            for page_no, page in enumerate(doc, start=1):
+                text = re.sub(r"\s+", " ", page.get_text("text") or "").strip()
+                if len(text) >= 15:
                     manual_pages.append({
-                        "filename": filename,
-                        "filepath": pdf_path,
-                        "page": page_num + 1,
-                        "text": page_text
+                        "filename": os.path.basename(filepath),
+                        "filepath": filepath,
+                        "page": page_no,
+                        "text": text,
+                        "norm": normalize_text(text),
                     })
-        except Exception:
-            pass
-    print(f"[✓] تمت فهرسة {len(manual_pages)} صفحة كتالوج بنجاح.")
+            doc.close()
+        except Exception as exc:
+            logger.warning("PDF failed %s: %s", filepath, exc)
+    logger.info("Indexed %d PDF pages", len(manual_pages))
 
-build_manual_index()
 
-def render_pdf_page_as_image(filepath, page_num):
-    """تحويل صفحة الكتالوج الأصلية لصورة عالية الوضوح لعرضها للفني"""
+def build_semantic_index() -> None:
+    global embedding_model, manual_embeddings
+    if not ENABLE_SEMANTIC_SEARCH or SentenceTransformer is None or not manual_pages:
+        return
+    try:
+        logger.info("Loading embedding model: %s", EMBEDDING_MODEL_NAME)
+        embedding_model = SentenceTransformer(EMBEDDING_MODEL_NAME)
+        texts = [p["text"][:5000] for p in manual_pages]
+        manual_embeddings = embedding_model.encode(
+            texts, convert_to_tensor=True, normalize_embeddings=True,
+            show_progress_bar=False,
+        )
+        logger.info("Semantic index ready: %d pages", len(texts))
+    except Exception as exc:
+        embedding_model = None
+        manual_embeddings = None
+        logger.warning("Semantic model unavailable; lexical search will be used: %s", exc)
+
+
+def build_image_index() -> None:
+    global part_images_map
+    part_images_map = {}
+    for filepath in glob.glob(os.path.join(IMAGE_DIR, "**", "*"), recursive=True):
+        if not os.path.isfile(filepath):
+            continue
+        if os.path.splitext(filepath)[1].lower() not in {".png", ".jpg", ".jpeg", ".webp"}:
+            continue
+        stem = os.path.splitext(os.path.basename(filepath))[0]
+        key = normalize_part(stem)
+        if key:
+            part_images_map[key] = filepath
+    logger.info("Indexed %d part images", len(part_images_map))
+
+
+def render_pdf_page(filepath: str, page_number: int) -> Optional[str]:
     try:
         doc = fitz.open(filepath)
-        page = doc[page_num - 1]
-        pix = page.get_pixmap(dpi=150)
-        output_image_path = f"/tmp/page_{page_num}_{os.path.splitext(os.path.basename(filepath))[0]}.png"
-        pix.save(output_image_path)
-        return output_image_path
-    except Exception as e:
-        print(f"[!] خطأ في استخراج صورة صفحة الكتالوج: {e}")
+        index = page_number - 1
+        if index < 0 or index >= len(doc):
+            doc.close()
+            return None
+        pix = doc[index].get_pixmap(matrix=fitz.Matrix(1.7, 1.7), alpha=False)
+        image = Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGB")
+        out = os.path.join("/tmp", f"catalog_{safe_filename(os.path.basename(filepath))}_{page_number}.png")
+        image.save(out)
+        doc.close()
+        return out
+    except Exception as exc:
+        logger.warning("Render page failed: %s", exc)
         return None
 
-# ==========================================
-# 4. محرك البصمة البصرية الدقيق للمستودع
-# ==========================================
-part_images_map = {}
-image_signatures = {}
 
-def get_img_sig(img):
-    img_gray = img.convert('L').resize((16, 16), Image.Resampling.BILINEAR)
-    pixels = list(img_gray.getdata())
-    avg = sum(pixels) / len(pixels)
-    return [1 if p > avg else 0 for p in pixels]
-
-def build_image_index():
-    global part_images_map, image_signatures
-    part_images_map = {}
-    image_signatures = {}
-    if not os.path.exists(IMAGE_DIR):
-        return
-    valid_exts = ('.jpg', '.jpeg', '.png', '.JPG', '.PNG')
-    for f in os.listdir(IMAGE_DIR):
-        if f.endswith(valid_exts):
-            part_no = os.path.splitext(f)[0]
-            clean_k = re.sub(r'[^a-zA-Z0-9]', '', part_no).lower()
-            img_path = os.path.join(IMAGE_DIR, f)
-            part_images_map[clean_k] = (part_no, img_path)
-            try:
-                with Image.open(img_path) as im:
-                    image_signatures[part_no] = (get_img_sig(im), img_path)
-            except Exception:
-                pass
-    print(f"[✓] تمت فهرسة {len(image_signatures)} صورة لقطع المستودع الميداني.")
-
-build_image_index()
-
-def match_uploaded_image(uploaded_img):
-    if uploaded_img is None or not image_signatures:
-        return None, None
-    try:
-        if not isinstance(uploaded_img, Image.Image):
-            uploaded_img = Image.fromarray(uploaded_img)
-            
-        up_sig = get_img_sig(uploaded_img)
-        best_part = None
-        min_diff = 256
-        
-        for part_no, (sig, path) in image_signatures.items():
-            diff = sum(c1 != c2 for c1, c2 in zip(up_sig, sig))
-            if diff < min_diff:
-                min_diff = diff
-                best_part = (part_no, path)
-                
-        if min_diff <= 85:
-            return best_part[0], best_part[1]
-    except Exception as e:
-        print(f"[!] خطأ في المطابقة البصرية: {e}")
-    return None, None
-
-def find_image_for_part(query_text):
-    if not query_text or not part_images_map:
+def find_image_for_part(query: str) -> Optional[str]:
+    q = normalize_part(query)
+    if not q:
         return None
-    clean_target = re.sub(r'[^a-zA-Z0-9]', '', query_text).lower()
-    if clean_target in part_images_map:
-        return part_images_map[clean_target][1]
-
-    tokens = re.findall(r'[A-Za-z0-9]{4,}', query_text)
-    for tok in tokens:
-        c_tok = tok.lower()
-        if c_tok in part_images_map:
-            return part_images_map[c_tok][1]
-
-    for k, v in part_images_map.items():
-        if len(k) >= 6 and (k in clean_target or clean_target in k):
-            return v[1]
+    if q in part_images_map:
+        return part_images_map[q]
+    for key, path in part_images_map.items():
+        if q in key or key in q:
+            return path
     return None
 
-# ==========================================
-# 5. محرك البحث الذكي والمتوازن (Strict & Resilient)
-# ==========================================
-def search_engine(query, top_k=3):
-    if not manual_pages:
-        return [], None
-    clean_q = query.strip()
-    
-    # تنظيف واستخراج مقاطع كود القطعة
-    segs = [s for s in re.split(r'[\.\s\-_/]+', clean_q) if s]
-    
-    # 1. المطابقة الحصرية للأربع مجموعات كاملة معاً (مثل: 0069.0008.014.00)
-    if len(segs) == 4:
-        s0, s1, s2, s3 = segs[0], segs[1], segs[2], segs[3]
-        
-        # أ) مطابقة المجموعات الأربع معاً بأي فاصل (نقاط، مسافات، شرطات)
-        pat_4 = rf'\b{re.escape(s0)}[\.\s\-_/]+{re.escape(s1)}[\.\s\-_/]+{re.escape(s2)}[\.\s\-_/]+{re.escape(s3)}\b'
-        matched = [p for p in manual_pages if re.search(pat_4, p["text"], re.IGNORECASE)]
-        if matched:
-            return matched[:top_k], ".".join(segs)
 
-        # ب) مطابقة المجموعات الأربع متصلة بالكامل بدون أي فواصل (Raw Digits)
-        raw_4 = f"{s0}{s1}{s2}{s3}".lower()
-        matched_raw = [p for p in manual_pages if raw_4 in re.sub(r'[^a-zA-Z0-9]', '', p["text"]).lower()]
-        if matched_raw:
-            return matched_raw[:top_k], ".".join(segs)
+def simple_image_match(uploaded: Image.Image) -> Tuple[Optional[str], Optional[float]]:
+    """Fallback visual matcher; replaceable later by a dedicated vision model."""
+    if uploaded is None or not part_images_map:
+        return None, None
+    try:
+        query = uploaded.convert("RGB").resize((32, 32))
+        q_pixels = list(query.getdata())
+        best_key, best_score = None, float("inf")
+        for key, path in part_images_map.items():
+            try:
+                ref = Image.open(path).convert("RGB").resize((32, 32))
+                r_pixels = list(ref.getdata())
+                score = sum(
+                    abs(a[0]-b[0]) + abs(a[1]-b[1]) + abs(a[2]-b[2])
+                    for a, b in zip(q_pixels, r_pixels)
+                ) / (32 * 32 * 3)
+                if score < best_score:
+                    best_key, best_score = key, score
+            except Exception:
+                continue
+        return (best_key, best_score) if best_key and best_score <= 65 else (None, best_score)
+    except Exception:
+        return None, None
 
-        # التوقف الفوري إذا لم تتطابق المجموعات الأربع معاً، لمنع جلب أي ماكينات أخرى
-        return [], None
 
-    # 2. إنذارات وأعطال ماكينات التغليف Automac (مثل: E002, E004)
-    alarms = re.findall(r'\b[A-Za-z]0*\d+\b|\bAlarm\s*\d+\b|\bError\s*\d+\b', clean_q, re.IGNORECASE)
-    if alarms:
-        for a in alarms:
-            m_num = re.search(r'\d+', a)
-            if m_num:
-                num = int(m_num.group())
-                pattern = rf'\b(E|Alarm|Error)\s*0*{num}\b'
-                matched = [p for p in manual_pages if re.search(pattern, p["text"], re.IGNORECASE)]
-                if matched:
-                    return matched[:top_k], a.upper()
+def extract_alarm_codes(query: str) -> List[str]:
+    return [re.sub(r"[-_ ]", "", x) for x in re.findall(r"\bE[-_ ]?\d{2,5}\b", str(query).upper())]
 
-    # 3. توجيه المنظومات بالاسم الصريح المباشر
-    keywords_map = {
-        "مايسترو": ["maestro", "eviscerat"],
-        "تغليف": ["automac", "wrapping", "297", "298"],
-        "تبريد": ["compressor", "chiller", "refrigeration"],
-        "كمبرسور": ["compressor", "airpol", "atlas"],
-        "رياشة": ["plucker", "picking"],
-        "سمط": ["scalder", "scalding"],
-        "قوانص": ["gizzard", "peeler"]
-    }
-    for ar_word, cat_filters in keywords_map.items():
-        if ar_word in clean_q:
-            matched = [p for p in manual_pages if any(f in p["filename"].lower() for f in cat_filters)]
-            if matched:
-                return matched[:top_k], ar_word
 
-    return [], None
-    # 2. إنذارات الأعطال المحددة (E002, E004...)
-    alarms = re.findall(r'\b[A-Za-z]0*\d+\b|\bAlarm\s*\d+\b|\bError\s*\d+\b', clean_q, re.IGNORECASE)
-    if alarms:
-        for a in alarms:
-            m_num = re.search(r'\d+', a)
-            if m_num:
-                num = int(m_num.group())
-                pattern = rf'\b(E|Alarm|Error)\s*0*{num}\b'
-                matched = [p for p in manual_pages if re.search(pattern, p["text"], re.IGNORECASE)]
-                if matched:
-                    if any(k in clean_q for k in ["تغليف", "automac", "fabbri"]):
-                        matches_sorted = sorted(matched, key=lambda x: any(k in x["filename"].lower() for k in ["automac", "297", "298"]), reverse=True)
-                        return matches_sorted[:top_k], a.upper()
-                    return matched[:top_k], a.upper()
+def lexical_search(query: str, top_k: int = 5) -> List[Tuple[float, dict]]:
+    qnorm = normalize_text(query)
+    tokens = [normalize_text(x) for x in re.findall(r"[\w\u0600-\u06FF]+", str(query).upper()) if len(x) >= 2]
+    results = []
 
-    # 3. توجيه المنظومات بالاسم العربي
-    keywords_map = {
-        "مايسترو": (["maestro", "eviscerat"], ["infeed", "entry", "positioning", "shackle", "drawing", "guide"]),
-        "تغليف": (["automac", "wrapping", "297", "298"], ["tray", "film", "alarm", "infeed", "stop"]),
-        "تبريد": (["compressor", "chiller", "refrigeration"], ["temperature", "pressure", "oil", "cooling"]),
-        "كمبرسور": (["compressor", "airpol", "atlas"], ["pressure", "filter", "separator", "alarm"]),
-        "رياشة": (["plucker", "picking"], ["finger", "belt", "motor"]),
-        "سمط": (["scalder", "scalding"], ["temperature", "water", "circulation"]),
-        "قوانص": (["gizzard", "peeler", "cd-6000"], ["roller", "peeling", "infeed", "shaft"])
-    }
-    for ar_word, (cat_filters, terms) in keywords_map.items():
-        if ar_word in clean_q:
-            pool = [p for p in manual_pages if any(f in p["filename"].lower() for f in cat_filters)]
-            if not pool:
-                pool = manual_pages
-            scored = []
-            for p in pool:
-                score = sum(1 for t in terms if re.search(r'\b' + re.escape(t) + r'\b', p["text"], re.IGNORECASE))
-                if score > 0:
-                    scored.append((score, p))
-            scored.sort(key=lambda x: x[0], reverse=True)
-            if scored:
-                return [x[1] for x in scored[:top_k]], ar_word
+    for page in manual_pages:
+        score = 0.0
+        if qnorm and qnorm in page["norm"]:
+            score += 10
+        for token in tokens:
+            if token and token in page["norm"]:
+                score += 1
+        for code in extract_alarm_codes(query):
+            if normalize_text(code) in page["norm"]:
+                score += 15
+        for keyword, aliases in ARABIC_MACHINE_TERMS.items():
+            if keyword in str(query):
+                for alias in aliases:
+                    if alias.upper() in page["text"].upper():
+                        score += 3
+        if score > 0:
+            results.append((score, page))
 
-    return [], None
-    # 2. إنذارات الأعطال المحددة (E002, E004...)
-    alarms = re.findall(r'\b[A-Za-z]0*\d+\b|\bAlarm\s*\d+\b|\bError\s*\d+\b', clean_q, re.IGNORECASE)
-    if alarms:
-        for a in alarms:
-            m_num = re.search(r'\d+', a)
-            if m_num:
-                num = int(m_num.group())
-                pattern = rf'\b(E|Alarm|Error)\s*0*{num}\b'
-                matched = [p for p in manual_pages if re.search(pattern, p["text"], re.IGNORECASE)]
-                if matched:
-                    if any(k in clean_q for k in ["تغليف", "automac", "fabbri"]):
-                        matches_sorted = sorted(matched, key=lambda x: any(k in x["filename"].lower() for k in ["automac", "297", "298"]), reverse=True)
-                        return matches_sorted[:top_k], a.upper()
-                    return matched[:top_k], a.upper()
+    results.sort(key=lambda x: x[0], reverse=True)
+    return results[:top_k]
 
-    # 3. توجيه المنظومات بالاسم العربي
-    keywords_map = {
-        "مايسترو": (["maestro", "eviscerat"], ["infeed", "entry", "positioning", "shackle", "drawing", "guide"]),
-        "تغليف": (["automac", "wrapping", "297", "298"], ["tray", "film", "alarm", "infeed", "stop"]),
-        "تبريد": (["compressor", "chiller", "refrigeration"], ["temperature", "pressure", "oil", "cooling"]),
-        "كمبرسور": (["compressor", "airpol", "atlas"], ["pressure", "filter", "separator", "alarm"]),
-        "رياشة": (["plucker", "picking"], ["finger", "belt", "motor"]),
-        "سمط": (["scalder", "scalding"], ["temperature", "water", "circulation"]),
-        "قوانص": (["gizzard", "peeler", "cd-6000"], ["roller", "peeling", "infeed", "shaft"])
-    }
-    for ar_word, (cat_filters, terms) in keywords_map.items():
-        if ar_word in clean_q:
-            pool = [p for p in manual_pages if any(f in p["filename"].lower() for f in cat_filters)]
-            if not pool:
-                pool = manual_pages
-            scored = []
-            for p in pool:
-                score = sum(1 for t in terms if re.search(r'\b' + re.escape(t) + r'\b', p["text"], re.IGNORECASE))
-                if score > 0:
-                    scored.append((score, p))
-            scored.sort(key=lambda x: x[0], reverse=True)
-            if scored:
-                return [x[1] for x in scored[:top_k]], ar_word
 
-    return [], None
-    # 2. إنذارات الأعطال (E002, E004, Alarm...)
-    alarms = re.findall(r'\b[A-Za-z]0*\d+\b|\bAlarm\s*\d+\b|\bError\s*\d+\b', clean_q, re.IGNORECASE)
-    if alarms:
-        for a in alarms:
-            m_num = re.search(r'\d+', a)
-            if m_num:
-                num = int(m_num.group())
-                pattern = rf'\b(E|Alarm|Error)\s*0*{num}\b'
-                matched = [p for p in manual_pages if re.search(pattern, p["text"], re.IGNORECASE)]
-                if matched:
-                    if any(k in clean_q for k in ["تغليف", "automac", "fabbri"]):
-                        matches_sorted = sorted(matched, key=lambda x: any(k in x["filename"].lower() for k in ["automac", "297", "298"]), reverse=True)
-                        return matches_sorted[:top_k], a.upper()
-                    return matched[:top_k], a.upper()
+def semantic_search(query: str, top_k: int = 5) -> List[Tuple[float, dict]]:
+    if embedding_model is None or manual_embeddings is None or util is None:
+        return []
+    try:
+        q = embedding_model.encode(query, convert_to_tensor=True, normalize_embeddings=True)
+        scores = util.cos_sim(q, manual_embeddings)[0]
+        values, indices = scores.topk(min(top_k, len(manual_pages)))
+        return [(float(v), manual_pages[int(i)]) for v, i in zip(values, indices)]
+    except Exception as exc:
+        logger.warning("Semantic search failed: %s", exc)
+        return []
 
-    # 3. توجيه المنظومات بالاسم العربي الصريح
-    keywords_map = {
-        "مايسترو": (["maestro", "eviscerat"], ["infeed", "entry", "positioning", "shackle", "drawing", "guide"]),
-        "تغليف": (["automac", "wrapping", "297", "298"], ["tray", "film", "alarm", "infeed", "stop"]),
-        "تبريد": (["compressor", "chiller", "refrigeration"], ["temperature", "pressure", "oil", "cooling"]),
-        "كمبرسور": (["compressor", "airpol", "atlas"], ["pressure", "filter", "separator", "alarm"]),
-        "رياشة": (["plucker", "picking"], ["finger", "belt", "motor"]),
-        "سمط": (["scalder", "scalding"], ["temperature", "water", "circulation"]),
-        "قوانص": (["gizzard", "peeler", "cd-6000"], ["roller", "peeling", "infeed", "shaft"])
-    }
-    for ar_word, (cat_filters, terms) in keywords_map.items():
-        if ar_word in clean_q:
-            pool = [p for p in manual_pages if any(f in p["filename"].lower() for f in cat_filters)]
-            if not pool:
-                pool = manual_pages
-            scored = []
-            for p in pool:
-                score = sum(1 for t in terms if re.search(r'\b' + re.escape(t) + r'\b', p["text"], re.IGNORECASE))
-                if score > 0:
-                    scored.append((score, p))
-            scored.sort(key=lambda x: x[0], reverse=True)
-            if scored:
-                return [x[1] for x in scored[:top_k]], ar_word
 
-    return [], None
+def search_engine(query: str, top_k: int = 5) -> List[dict]:
+    lexical = lexical_search(query, top_k=max(top_k, 8))
+    semantic = semantic_search(query, top_k=max(top_k, 8))
+    combined: Dict[Tuple[str, int], Tuple[float, dict]] = {}
 
-# ==========================================
-# 6. المساعد الفني الميداني (Maintenance Copilot)
-# ==========================================
-def maintenance_copilot(query, input_image=None):
-    clean_q = query.strip() if query else ""
-    matched_image_path = None
-    catalog_page_path = None
-    response = []
+    for score, page in lexical:
+        key = (page["filepath"], page["page"])
+        combined[key] = (score, page)
 
-    # 1. فحص الصورة المرفوعة
-    if input_image is not None:
-        matched_part_no, matched_img = match_uploaded_image(input_image)
-        if matched_part_no:
-            response.append(f"📸 **تم التعرف بصرياً على صورة القطعة:** `{matched_part_no}`")
-            matched_image_path = matched_img
-            if not clean_q:
-                clean_q = matched_part_no
+    # Semantic score is 0..1. Give it enough weight to surface meaning-based matches,
+    # while lexical exact matches remain dominant for part numbers and alarm codes.
+    for score, page in semantic:
+        key = (page["filepath"], page["page"])
+        semantic_score = score * 8
+        if key in combined:
+            combined[key] = (combined[key][0] + semantic_score, page)
         else:
-            if not clean_q:
-                tz = pytz.timezone('Asia/Hebron')
-                timestamp = datetime.now(tz).strftime('%Y-%m-%d %I:%M %p')
-                fail_msg = f"⚠️ *تنبيه فحص ميداني - مسلخ عزيزا*\n⏰ الوقت: {timestamp}\n📸 تم رفع صورة قطعة لم يتم التعرف عليها تلقائياً، يرجى التدقيق اليدوي."
-                send_whatsapp_alert(fail_msg)
-                return "❌ لم يتم العثور على صورة متطابقة بصرياً مع قطع المستودع المفهرسة. يرجى إدخال رقم القطعة كتابةً.\n---\n📲 تم إرسال إشعار لطاقم الصيانة بالمتابعة.", None, None
+            combined[key] = (semantic_score, page)
 
-    if not clean_q:
-        return "⚠️ يرجى استخدام زر التحدث الصوتي، أو كتابة رقم القطعة / كود الإنذار، أو رفع صورة القطعة.", None, None
+    ranked = sorted(combined.values(), key=lambda x: x[0], reverse=True)
+    return [page for _, page in ranked[:top_k]]
 
-    # 2. فحص قاعدة الأعطال والإنذارات
-    kb_hit = None
-    alarm_match = re.search(r'\b(E0*\d+|Alarm\s*\d+)\b', clean_q, re.IGNORECASE)
-    if alarm_match:
-        digit_m = re.search(r'\d+', alarm_match.group(1))
-        if digit_m:
-            formatted_e = f"E{int(digit_m.group()):03d}"
-            if formatted_e in TROUBLESHOOTING_KB:
-                kb_hit = TROUBLESHOOTING_KB[formatted_e]
 
-    if not kb_hit:
-        for kw, data in TROUBLESHOOTING_KB.items():
-            if kw in clean_q:
-                kb_hit = data
-                break
+def find_troubleshooting(query: str) -> Tuple[Optional[str], Optional[dict]]:
+    for code in extract_alarm_codes(query):
+        if code in troubleshooting_kb:
+            return code, troubleshooting_kb[code]
+    upper = str(query).upper()
+    for key, item in troubleshooting_kb.items():
+        if str(key).upper() in upper:
+            return key, item
+    for keyword in ARABIC_MACHINE_TERMS:
+        if keyword in str(query):
+            for key, item in troubleshooting_kb.items():
+                blob = json.dumps(item, ensure_ascii=False).upper()
+                if any(alias.upper() in blob for alias in ARABIC_MACHINE_TERMS[keyword]):
+                    return key, item
+    return None, None
 
-    if kb_hit:
-        response.append(f"## 🚨 {kb_hit['title']}")
-        response.append(f"📍 **المنظومة / الماكينة:** {kb_hit['machine']}\n")
-        response.append("### 🔍 الأسباب المحتملة (Possible Causes):")
-        for c in kb_hit['causes']:
-            response.append(f"- {c}")
-        response.append("\n### 🛠️ خطوات الضبط والمعالجة الهندسية (Remedy):")
-        for idx, r in enumerate(kb_hit['remedy'], 1):
-            response.append(f"{idx}. {r}")
-        response.append("\n---\n")
 
-    # 3. فحص الكتالوجات واستخراج صورة الصفحة
-    hits, matched_term = search_engine(clean_q, top_k=4)
-    if not matched_image_path:
-        matched_image_path = find_image_for_part(matched_term if matched_term else clean_q)
+def send_whatsapp_alert(message: str) -> bool:
+    if not all((GREEN_API_ID, GREEN_API_TOKEN, ALERT_GROUP_ID)):
+        return False
+    try:
+        url = f"https://api.green-api.com/waInstance{GREEN_API_ID}/sendMessage/{GREEN_API_TOKEN}"
+        response = requests.post(
+            url,
+            json={"chatId": ALERT_GROUP_ID, "message": message},
+            timeout=10,
+        )
+        return response.ok
+    except Exception as exc:
+        logger.warning("WhatsApp failed: %s", exc)
+        return False
 
-    if hits:
-        response.append("### ✅ تم العثور على مراجع مطابقة في الكتالوجات:")
-        for h in hits:
-            response.append(f"- **الملف:** `{h['filename']}` (صفحة {h['page']})")
-            text = h['text'].replace("\r", "")
-            target = matched_term if matched_term else clean_q
-            idx = text.lower().find(target.lower().split()[0])
-            if idx != -1:
-                start = max(0, idx - 50)
-                end = min(len(text), idx + len(target) + 140)
-                snippet = text[start:end].replace("\n", " ").strip()
-            else:
-                words = text.split()
-                snippet = " ".join(words[:40])
-            response.append(f"  > *\"...{snippet}...\"*\n")
-            
-        catalog_page_path = render_pdf_page_as_image(hits[0]['filepath'], hits[0]['page'])
-    else:
-        if not kb_hit:
-            response.append(f"❌ لم يتم العثور على أي تطابق لطلبك `{clean_q}` داخل صفحات الكتالوجات.")
 
-    if matched_image_path:
-        response.append("\n🖼️ **تم إرفاق صورة القطعة الحقيقية من أرشيف المستودع الميداني أدناه.**")
+def maintenance_copilot(query: str, input_image=None):
+    query = (query or "").strip()
+    recognized_part = None
+    image_score = None
+    messages = []
 
-    # 4. إرسال تنبيه الواتساب المباشر
-    tz = pytz.timezone('Asia/Hebron')
-    timestamp = datetime.now(tz).strftime('%Y-%m-%d %I:%M %p')
-
-    alert_msg = f"🔔 *إشعار صيانة ومطابقة - مسلخ عزيزا*\n"
-    alert_msg += f"⏰ الوقت: {timestamp}\n"
-    alert_msg += f"🔍 الاستعلام / رقم القطعة: `{clean_q}`\n"
-    if kb_hit:
-        alert_msg += f"⚠️ التشخيص: {kb_hit['title']}\n"
-    if hits:
-        alert_msg += f"📖 المرجع الفني: {hits[0]['filename']} (صفحة {hits[0]['page']})\n"
-    if matched_image_path:
-        alert_msg += f"🖼️ الحالة: تم استخراج صورة مطابقة من أرشيف المستودع."
-
-    send_whatsapp_alert(alert_msg)
-    response.append("\n---\n📲 تم إرسال إشعار فوري لطاقم الصيانة عبر الواتساب.")
-
-    return "\n".join(response), matched_image_path, catalog_page_path
-
-# ==========================================
-# 7. واجهة المستخدم الرسومية (Gradio Interface)
-# ==========================================
-total_manuals = len(glob.glob(os.path.join(BASE_DIR, "**/*.pdf"), recursive=True))
-
-logo_base64 = ""
-for p in ["logo.png", "/app/logo.png"]:
-    if os.path.exists(p):
-        try:
-            with open(p, "rb") as f:
-                logo_base64 = base64.b64encode(f.read()).decode("utf-8")
-            break
-        except Exception:
-            pass
-
-logo_html = f'<img src="data:image/png;base64,{logo_base64}" style="width: 100%; height: 100%; object-fit: contain;">' if logo_base64 else '<span style="font-size: 20px; font-weight: 900; color: #1b5e20;">عزيزا</span>'
-
-HEADER_HTML = f"""
-<div style="background: linear-gradient(135deg, #0b3d20 0%, #1b5e20 100%); padding: 18px 25px; border-radius: 14px; color: white; margin-bottom: 20px; box-shadow: 0 4px 15px rgba(0,0,0,0.18); direction: rtl; text-align: right; border-bottom: 4px solid #ffcc00;">
-    <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 15px;">
-        <div style="display: flex; align-items: center; gap: 20px;">
-            <div style="background: #ffffff; border-radius: 50%; padding: 4px; box-shadow: 0 4px 12px rgba(0,0,0,0.3); display: flex; align-items: center; justify-content: center; width: 85px; height: 85px; border: 3px solid #ffcc00; overflow: hidden;">
-                {logo_html}
-            </div>
-            <div>
-                <h1 style="margin: 0; font-size: 23px; font-weight: 800; color: #ffffff;">شركة دواجن فلسطين - مسلخ عزيزا</h1>
-                <p style="margin: 4px 0 0 0; font-size: 14px; color: #e8f5e9;">نظام الصيانة والتشخيص الهندسي الدقيق (خطوط Meyn • ماكينات التغليف Automac • منظومات التبريد)</p>
-            </div>
-        </div>
-        <div style="border-right: 2px solid rgba(255,255,255,0.25); padding-right: 20px;">
-            <span style="font-size: 12px; color: #c8e6c9; display: block;">إعداد وتطوير النظام:</span>
-            <span style="font-size: 16px; font-weight: bold; color: #ffeb3b;">م. فادي محمود</span>
-            <span style="font-size: 12px; color: #e8f5e9; display: block;">مسؤول قسم الصيانة والأتمتة</span>
-        </div>
-    </div>
-</div>
-"""
-
-VOICE_HTML = """
-<div style="text-align: center; margin-bottom: 12px;">
-    <button id="aziza_mic_btn" type="button" style="background-color: #2e7d32; color: #ffffff; border: none; padding: 12px 28px; font-size: 15px; font-weight: bold; border-radius: 30px; cursor: pointer; box-shadow: 0 4px 10px rgba(0,0,0,0.25);">
-        🎤 اضغط هنا للتحدث بالصوت (للأيدي المشغولة)
-    </button>
-</div>
-
-<script>
-function attachMicHandler() {
-    var btn = document.getElementById('aziza_mic_btn');
-    if (!btn) return;
-
-    btn.onclick = function() {
-        var SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-        if (!SpeechRecognition) {
-            alert("يرجى فتح الرابط من متصفح Google Chrome لتفعيل ميزة التحدث بالصوت.");
-            return;
-        }
-
-        var recognition = new SpeechRecognition();
-        recognition.lang = 'ar-SA';
-        recognition.interimResults = false;
-        recognition.maxAlternatives = 1;
-
-        btn.innerText = "🔴 جاري الاستماع... تحدث الآن";
-        btn.style.backgroundColor = "#c62828";
-
-        recognition.onresult = function(event) {
-            var text = event.results[0][0].transcript;
-            var inputArea = document.querySelector('textarea');
-            if (inputArea) {
-                inputArea.value = text;
-                inputArea.dispatchEvent(new Event('input', { bubbles: true }));
-            }
-            btn.innerText = "🎤 اضغط هنا للتحدث بالصوت (للأيدي المشغولة)";
-            btn.style.backgroundColor = "#2e7d32";
-        };
-
-        recognition.onerror = function(e) {
-            console.error("Speech recognition error:", e.error);
-            btn.innerText = "🎤 اضغط هنا للتحدث بالصوت (للأيدي المشغولة)";
-            btn.style.backgroundColor = "#2e7d32";
-            if (e.error === 'not-allowed') {
-                alert("يرجى إعطاء الإذن للمتصفح بالوصول إلى الميكروفون.");
-            }
-        };
-
-        recognition.onend = function() {
-            btn.innerText = "🎤 اضغط هنا للتحدث بالصوت (للأيدي المشغولة)";
-            btn.style.backgroundColor = "#2e7d32";
-        };
-
-        recognition.start();
-    };
-}
-
-setTimeout(attachMicHandler, 1500);
-</script>
-"""
-
-with gr.Blocks(title="منصة الصيانة الهندسية - مسلخ عزيزا") as demo:
-    gr.HTML(HEADER_HTML)
-    gr.HTML(VOICE_HTML)
-    
-    with gr.Row():
-        status_box = gr.Markdown(f"📊 **حالة النظام:** تم تجهيز وفهرسة `{total_manuals}` كتالوج فني ومطابقة صور قطع المستودع الميداني.")
-        
-    with gr.Row():
-        with gr.Column(scale=1):
-            query_input = gr.Textbox(
-                label="أدخل كود الإنذار / رقم القطعة (4 مقاطع) / وصف العطل (كتابة أو عبر زر الصوت بالأعلى)",
-                placeholder="أمثلة: انذار E002 | مشكله ماكينه المايسترو | عطل رياشة | 0000.D409.003.01",
-                lines=2
+    if input_image is not None:
+        recognized_part, image_score = simple_image_match(input_image)
+        if recognized_part:
+            messages.append(f"📷 **التعرف المبدئي من الصورة:** `{recognized_part}`")
+            if not query:
+                query = recognized_part
+        elif not query:
+            return (
+                "⚠️ لم أتمكن من مطابقة الصورة بثقة كافية. أدخل رقم القطعة أو وصف العطل.",
+                None,
+                None,
             )
-            image_input = gr.Image(type="pil", label="أو ارفع صورة القطعة للتعرف البصري عليها ومطابقتها")
-            
+
+    if not query:
+        return "اكتب رقم القطعة أو Alarm أو وصف المشكلة.", None, None
+
+    alarm_code, troubleshooting = find_troubleshooting(query)
+    results = search_engine(query, top_k=5)
+    part_image = find_image_for_part(recognized_part or query)
+
+    response = [
+        "## 🔧 المساعد الذكي للصيانة – مسلخ شركة دواجن فلسطين / عزيزا",
+        f"**البحث:** {query}",
+    ]
+    if messages:
+        response.extend(messages)
+
+    if alarm_code and troubleshooting:
+        response += [
+            "\n### 🚨 تشخيص العطل",
+            f"**Alarm:** `{alarm_code}`",
+            f"**المعدة:** {troubleshooting.get('machine', 'غير محددة')}",
+            f"**العنوان:** {troubleshooting.get('title', '')}",
+        ]
+        causes = troubleshooting.get("causes", [])
+        remedies = troubleshooting.get("remedies", [])
+        if causes:
+            response.append("\n**الأسباب المحتملة:**")
+            response.extend(f"- {x}" for x in causes)
+        if remedies:
+            response.append("\n**إجراءات الفحص والمعالجة:**")
+            response.extend(f"- {x}" for x in remedies)
+
+    if results:
+        response.append("\n### 📚 النتائج من الكتالوجات")
+        for i, page in enumerate(results, 1):
+            snippet = page["text"][:500].strip()
+            response.append(
+                f"\n**{i}. {page['filename']} — صفحة {page['page']}**\n> {snippet}"
+            )
+    else:
+        response.append("\n### 📚 الكتالوجات\nلم يتم العثور على نتيجة مطابقة كافية.")
+
+    page_image = None
+    if results:
+        page_image = render_pdf_page(results[0]["filepath"], results[0]["page"])
+
+    if part_image:
+        response.append(
+            f"\n### 🧩 قطعة الغيار\nتم العثور على صورة: `{os.path.basename(part_image)}`"
+        )
+    elif recognized_part:
+        response.append("\n⚠️ تم التعرف على كود مبدئيًا ولكن لم توجد صورة محفوظة له.")
+
+    # Notify only for unresolved cases, not every normal search.
+    if (not results and not troubleshooting) or (input_image is not None and not recognized_part):
+        send_whatsapp_alert(
+            "طلب مساعدة من مساعد الصيانة الذكي\n"
+            f"الاستعلام: {query}\n"
+            f"Alarm: {alarm_code or 'غير معروف'}"
+        )
+
+    return "\n".join(response), part_image, page_image
+
+
+def initialize() -> None:
+    global troubleshooting_kb
+    logger.info("Initializing Aziza AI Maintenance Copilot")
+    sync_data_from_gcs()
+    troubleshooting_kb = load_alarm_database()
+    build_manual_index()
+    build_image_index()
+    build_semantic_index()
+    logger.info(
+        "Ready: pages=%d, parts=%d, alarms=%d, semantic=%s",
+        len(manual_pages), len(part_images_map), len(troubleshooting_kb),
+        embedding_model is not None,
+    )
+
+
+initialize()
+
+# ============================================================
+# Gradio interface
+# ============================================================
+
+with gr.Blocks(title="Aziza AI Maintenance Copilot", theme=gr.themes.Soft()) as demo:
+    gr.Markdown(
+        """
+# 🔧 المساعد الذكي للصيانة
+### شركة دواجن فلسطين – مسلخ عزيزا
+
+ابحث عن **رقم قطعة، Part Number، Alarm، أو وصف مشكلة**، أو ارفع صورة لقطعة الغيار.
+"""
+    )
+
+    with gr.Row():
+        with gr.Column(scale=2):
+            query_box = gr.Textbox(
+                label="رقم القطعة / Alarm / وصف العطل",
+                placeholder="مثال: E002 أو D409-003-01 أو ماكينة الرياشة لا تعمل",
+                lines=4,
+            )
+            image_input = gr.Image(label="صورة قطعة الغيار", type="pil")
             with gr.Row():
-                submit_btn = gr.Button("فحص وتشخيص العطل / مطابقة القطعة 🔍", variant="primary", scale=2)
-                clear_btn = gr.Button("مسح الحقول 🔄", scale=1)
-            
-        with gr.Column(scale=1):
-            output_box = gr.Markdown(label="تقرير الفحص الفني والحلول")
-            with gr.Row():
-                matched_img_output = gr.Image(type="filepath", label="صورة القطعة المطابقة من أرشيف المستودع")
-                catalog_page_output = gr.Image(type="filepath", label="📄 صفحة الكتالوج الأصلية (Troubleshooting / Drawing)")
-            
-    submit_btn.click(
-        fn=maintenance_copilot,
-        inputs=[query_input, image_input],
-        outputs=[output_box, matched_img_output, catalog_page_output]
+                search_btn = gr.Button("🔍 بحث", variant="primary")
+                clear_btn = gr.Button("🧹 مسح")
+
+        with gr.Column(scale=3):
+            result_box = gr.Markdown(label="نتيجة البحث")
+
+    with gr.Row():
+        part_output = gr.Image(label="🧩 صورة قطعة الغيار", type="filepath")
+        catalog_output = gr.Image(label="📖 صفحة الكتالوج", type="filepath")
+
+    search_btn.click(
+        maintenance_copilot,
+        inputs=[query_box, image_input],
+        outputs=[result_box, part_output, catalog_output],
+    )
+    query_box.submit(
+        maintenance_copilot,
+        inputs=[query_box, image_input],
+        outputs=[result_box, part_output, catalog_output],
     )
     clear_btn.click(
         lambda: ("", None, "", None, None),
-        outputs=[query_input, image_input, output_box, matched_img_output, catalog_page_output]
+        outputs=[query_box, image_input, result_box, part_output, catalog_output],
     )
 
-if __name__ == "__main__":
-    demo.launch(
-        server_name="0.0.0.0",
-        server_port=PORT
+    gr.Markdown(
+        """
+---
+**GitHub:** الكود فقط | **Google Cloud Storage:** الكتالوجات والصور وبيانات الأعطال
+
+> البحث النصي والبحث الدلالي يعملان معًا عند توفر نموذج `sentence-transformers`.
+> مطابقة الصور الحالية هي مطابقة بصرية خفيفة؛ يمكن تطويرها لاحقًا إلى نموذج رؤية متخصص.
+"""
     )
+
+
+if __name__ == "__main__":
+    demo.launch(server_name="0.0.0.0", server_port=PORT, show_error=True)
