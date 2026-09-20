@@ -348,6 +348,46 @@ def search_engine(query, top_k=5):
                 return [x[1] for x in scored[:top_k]], ar_word
 
     return [], None
+    # 2. إنذارات الأعطال المحددة (E002, E004...)
+    alarms = re.findall(r'\b[A-Za-z]0*\d+\b|\bAlarm\s*\d+\b|\bError\s*\d+\b', clean_q, re.IGNORECASE)
+    if alarms:
+        for a in alarms:
+            m_num = re.search(r'\d+', a)
+            if m_num:
+                num = int(m_num.group())
+                pattern = rf'\b(E|Alarm|Error)\s*0*{num}\b'
+                matched = [p for p in manual_pages if re.search(pattern, p["text"], re.IGNORECASE)]
+                if matched:
+                    if any(k in clean_q for k in ["تغليف", "automac", "fabbri"]):
+                        matches_sorted = sorted(matched, key=lambda x: any(k in x["filename"].lower() for k in ["automac", "297", "298"]), reverse=True)
+                        return matches_sorted[:top_k], a.upper()
+                    return matched[:top_k], a.upper()
+
+    # 3. توجيه المنظومات بالاسم العربي
+    keywords_map = {
+        "مايسترو": (["maestro", "eviscerat"], ["infeed", "entry", "positioning", "shackle", "drawing", "guide"]),
+        "تغليف": (["automac", "wrapping", "297", "298"], ["tray", "film", "alarm", "infeed", "stop"]),
+        "تبريد": (["compressor", "chiller", "refrigeration"], ["temperature", "pressure", "oil", "cooling"]),
+        "كمبرسور": (["compressor", "airpol", "atlas"], ["pressure", "filter", "separator", "alarm"]),
+        "رياشة": (["plucker", "picking"], ["finger", "belt", "motor"]),
+        "سمط": (["scalder", "scalding"], ["temperature", "water", "circulation"]),
+        "قوانص": (["gizzard", "peeler", "cd-6000"], ["roller", "peeling", "infeed", "shaft"])
+    }
+    for ar_word, (cat_filters, terms) in keywords_map.items():
+        if ar_word in clean_q:
+            pool = [p for p in manual_pages if any(f in p["filename"].lower() for f in cat_filters)]
+            if not pool:
+                pool = manual_pages
+            scored = []
+            for p in pool:
+                score = sum(1 for t in terms if re.search(r'\b' + re.escape(t) + r'\b', p["text"], re.IGNORECASE))
+                if score > 0:
+                    scored.append((score, p))
+            scored.sort(key=lambda x: x[0], reverse=True)
+            if scored:
+                return [x[1] for x in scored[:top_k]], ar_word
+
+    return [], None
     # 2. إنذارات الأعطال (E002, E004, Alarm...)
     alarms = re.findall(r'\b[A-Za-z]0*\d+\b|\bAlarm\s*\d+\b|\bError\s*\d+\b', clean_q, re.IGNORECASE)
     if alarms:
