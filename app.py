@@ -269,7 +269,7 @@ def search_engine(query, top_k=5):
         return [], None
     clean_q = query.strip()
     
-    # 1. كود القطعة المكون من 4 مقاطع
+    # 1. المطابقة الصارمة لكود القطعة المكون من 4 مقاطع (فقط الكود الكامل)
     codes_4 = re.findall(r'([A-Za-z0-9]+)[\.\s\-_/]+([A-Za-z0-9]+)[\.\s\-_/]+([A-Za-z0-9]+)[\.\s\-_/]+([A-Za-z0-9]+)', clean_q)
     if codes_4:
         for segs in codes_4:
@@ -277,8 +277,9 @@ def search_engine(query, top_k=5):
             matched = [p for p in manual_pages if re.search(pattern, p["text"], re.IGNORECASE)]
             if matched:
                 return matched[:top_k], ".".join(segs)
+        return [], None
 
-    # 2. إنذارات الأعطال
+    # 2. إنذارات الأعطال المحددة (E002, E004...)
     alarms = re.findall(r'\b[A-Za-z]0*\d+\b|\bAlarm\s*\d+\b|\bError\s*\d+\b', clean_q, re.IGNORECASE)
     if alarms:
         for a in alarms:
@@ -293,14 +294,15 @@ def search_engine(query, top_k=5):
                         return matches_sorted[:top_k], a.upper()
                     return matched[:top_k], a.upper()
 
-    # 3. توجيه المنظومات بالاسم العربي
+    # 3. توجيه المنظومات بالاسم العربي الصريح
     keywords_map = {
         "مايسترو": (["maestro", "eviscerat"], ["infeed", "entry", "positioning", "shackle", "drawing", "guide"]),
         "تغليف": (["automac", "wrapping", "297", "298"], ["tray", "film", "alarm", "infeed", "stop"]),
         "تبريد": (["compressor", "chiller", "refrigeration"], ["temperature", "pressure", "oil", "cooling"]),
         "كمبرسور": (["compressor", "airpol", "atlas"], ["pressure", "filter", "separator", "alarm"]),
         "رياشة": (["plucker", "picking"], ["finger", "belt", "motor"]),
-        "سمط": (["scalder", "scalding"], ["temperature", "water", "circulation"])
+        "سمط": (["scalder", "scalding"], ["temperature", "water", "circulation"]),
+        "قوانص": (["gizzard", "peeler"], ["roller", "peeling", "infeed"])
     }
     for ar_word, (cat_filters, terms) in keywords_map.items():
         if ar_word in clean_q:
@@ -315,14 +317,6 @@ def search_engine(query, top_k=5):
             scored.sort(key=lambda x: x[0], reverse=True)
             if scored:
                 return [x[1] for x in scored[:top_k]], ar_word
-
-    # 4. أي رمز أو كلمة إنجليزية
-    eng_tokens = re.findall(r'[A-Za-z0-9]{3,}', clean_q)
-    for tok in eng_tokens:
-        pat = r'\b' + re.escape(tok) + r'\b'
-        matches = [p for p in manual_pages if re.search(pat, p["text"], re.IGNORECASE)]
-        if matches:
-            return matches[:top_k], tok
 
     return [], None
 
