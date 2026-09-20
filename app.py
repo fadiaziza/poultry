@@ -269,31 +269,34 @@ def find_image_for_part(query_text):
 # ==========================================
 # 5. محرك البحث الذكي والمتوازن (Strict & Resilient)
 # ==========================================
-def search_engine(query, top_k=5):
+def search_engine(query, top_k=3):
     if not manual_pages:
         return [], None
     clean_q = query.strip()
     
-    # 1. إذا كان المدخل رقم قطعة (يحتوي نقاط أو أرقام):
-    # نبحث عن الرقم كما هو تماماً، أو باستبدال النقاط بمسافات
-    exact_code = clean_q
-    spaced_code = clean_q.replace(".", " ")
+    # تنظيف واستخراج مقاطع كود القطعة
+    segs = [s for s in re.split(r'[\.\s\-_/]+', clean_q) if s]
     
-    # مطابقة مباشرة وصريحة في نصوص صفحات الكتالوجات
-    matched = [p for p in manual_pages if exact_code.lower() in p["text"].lower() or spaced_code.lower() in p["text"].lower()]
-    if matched:
-        return matched[:top_k], clean_q
+    # 1. المطابقة الحصرية للأربع مجموعات كاملة معاً (مثل: 0069.0008.014.00)
+    if len(segs) == 4:
+        s0, s1, s2, s3 = segs[0], segs[1], segs[2], segs[3]
+        
+        # أ) مطابقة المجموعات الأربع معاً بأي فاصل (نقاط، مسافات، شرطات)
+        pat_4 = rf'\b{re.escape(s0)}[\.\s\-_/]+{re.escape(s1)}[\.\s\-_/]+{re.escape(s2)}[\.\s\-_/]+{re.escape(s3)}\b'
+        matched = [p for p in manual_pages if re.search(pat_4, p["text"], re.IGNORECASE)]
+        if matched:
+            return matched[:top_k], ".".join(segs)
 
-    # محاولة بمطابقة أول جزأين معاً فقط لو كان الكتالوج يختصر الأرقام الفرعية
-    parts = clean_q.split(".")
-    if len(parts) >= 2:
-        base_exact = f"{parts[0]}.{parts[1]}"
-        base_spaced = f"{parts[0]} {parts[1]}"
-        matched_base = [p for p in manual_pages if base_exact.lower() in p["text"].lower() or base_spaced.lower() in p["text"].lower()]
-        if matched_base:
-            return matched_base[:top_k], base_exact
+        # ب) مطابقة المجموعات الأربع متصلة بالكامل بدون أي فواصل (Raw Digits)
+        raw_4 = f"{s0}{s1}{s2}{s3}".lower()
+        matched_raw = [p for p in manual_pages if raw_4 in re.sub(r'[^a-zA-Z0-9]', '', p["text"]).lower()]
+        if matched_raw:
+            return matched_raw[:top_k], ".".join(segs)
 
-    # 2. إنذارات وأعطال Automac المحددة (E002, E004...)
+        # التوقف الفوري إذا لم تتطابق المجموعات الأربع معاً، لمنع جلب أي ماكينات أخرى
+        return [], None
+
+    # 2. إنذارات وأعطال ماكينات التغليف Automac (مثل: E002, E004)
     alarms = re.findall(r'\b[A-Za-z]0*\d+\b|\bAlarm\s*\d+\b|\bError\s*\d+\b', clean_q, re.IGNORECASE)
     if alarms:
         for a in alarms:
@@ -305,7 +308,7 @@ def search_engine(query, top_k=5):
                 if matched:
                     return matched[:top_k], a.upper()
 
-    # 3. توجيه الماكينات بالكلمات المباشرة (مايسترو، رياشة، تغليف...)
+    # 3. توجيه المنظومات بالاسم الصريح المباشر
     keywords_map = {
         "مايسترو": ["maestro", "eviscerat"],
         "تغليف": ["automac", "wrapping", "297", "298"],
@@ -322,7 +325,6 @@ def search_engine(query, top_k=5):
                 return matched[:top_k], ar_word
 
     return [], None
-
     # 2. إنذارات الأعطال المحددة (E002, E004...)
     alarms = re.findall(r'\b[A-Za-z]0*\d+\b|\bAlarm\s*\d+\b|\bError\s*\d+\b', clean_q, re.IGNORECASE)
     if alarms:
