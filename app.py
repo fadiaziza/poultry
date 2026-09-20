@@ -273,40 +273,55 @@ def search_engine(query, top_k=5):
     if not manual_pages:
         return [], None
     clean_q = query.strip()
-
-    # 1. استخراج مقاطع الأرقام/الحروف من الاستعلام
-    tokens = re.findall(r'[A-Za-z0-9]+', clean_q)
     
-    # إذا كان الاستعلام يحتوي على كود قطعة (مقطعين أو أكثر بأرقام وحروف)
-    if len(tokens) >= 2:
-        # أ) استخراج المقاطع المفتاحية المهمة (تجاوز الأصفار المنفردة)
-        significant_tokens = [t for t in tokens if not re.fullmatch(r'0+', t)]
-        
-        # محاولة المطابقة بأهم مقطعين مفتاحيين معاً (مثلاً 0206 مع 012 أو 0668 مع 0095)
-        if len(significant_tokens) >= 2:
-            t1, t2 = significant_tokens[0], significant_tokens[1]
-            pattern_pair = rf'{re.escape(t1)}[\.\s\-_/]+{re.escape(t2)}'
-            matched = [p for p in manual_pages if re.search(pattern_pair, p["text"], re.IGNORECASE)]
-            if matched:
-                return matched[:top_k], f"{t1}.{t2}"
+    # 1. إذا كان المدخل رقم قطعة (يحتوي نقاط أو أرقام):
+    # نبحث عن الرقم كما هو تماماً، أو باستبدال النقاط بمسافات
+    exact_code = clean_q
+    spaced_code = clean_q.replace(".", " ")
+    
+    # مطابقة مباشرة وصريحة في نصوص صفحات الكتالوجات
+    matched = [p for p in manual_pages if exact_code.lower() in p["text"].lower() or spaced_code.lower() in p["text"].lower()]
+    if matched:
+        return matched[:top_k], clean_q
 
-        # ب) المطابقة بأي مقطع رئيسي مميز يتكون من 4 خانات فأكثر (مثل 0206 أو 0668)
-        for t in significant_tokens:
-            if len(t) >= 4:
-                # التأكد من وجوده كرمز قطعة وليس رقماً عشوائياً
-                pattern_single = rf'\b{re.escape(t)}\b'
-                matched = [p for p in manual_pages if re.search(pattern_single, p["text"], re.IGNORECASE)]
+    # محاولة بمطابقة أول جزأين معاً فقط لو كان الكتالوج يختصر الأرقام الفرعية
+    parts = clean_q.split(".")
+    if len(parts) >= 2:
+        base_exact = f"{parts[0]}.{parts[1]}"
+        base_spaced = f"{parts[0]} {parts[1]}"
+        matched_base = [p for p in manual_pages if base_exact.lower() in p["text"].lower() or base_spaced.lower() in p["text"].lower()]
+        if matched_base:
+            return matched_base[:top_k], base_exact
+
+    # 2. إنذارات وأعطال Automac المحددة (E002, E004...)
+    alarms = re.findall(r'\b[A-Za-z]0*\d+\b|\bAlarm\s*\d+\b|\bError\s*\d+\b', clean_q, re.IGNORECASE)
+    if alarms:
+        for a in alarms:
+            m_num = re.search(r'\d+', a)
+            if m_num:
+                num = int(m_num.group())
+                pattern = rf'\b(E|Alarm|Error)\s*0*{num}\b'
+                matched = [p for p in manual_pages if re.search(pattern, p["text"], re.IGNORECASE)]
                 if matched:
-                    return matched[:top_k], t
+                    return matched[:top_k], a.upper()
 
-        # ج) مطابقة النص المدمج (بدون فواصل أو نقاط)
-        raw_digits = "".join(tokens).lower()
-        if len(raw_digits) >= 6:
-            matched_raw = [p for p in manual_pages if raw_digits in re.sub(r'[^a-zA-Z0-9]', '', p["text"]).lower()]
-            if matched_raw:
-                return matched_raw[:top_k], clean_q
+    # 3. توجيه الماكينات بالكلمات المباشرة (مايسترو، رياشة، تغليف...)
+    keywords_map = {
+        "مايسترو": ["maestro", "eviscerat"],
+        "تغليف": ["automac", "wrapping", "297", "298"],
+        "تبريد": ["compressor", "chiller", "refrigeration"],
+        "كمبرسور": ["compressor", "airpol", "atlas"],
+        "رياشة": ["plucker", "picking"],
+        "سمط": ["scalder", "scalding"],
+        "قوانص": ["gizzard", "peeler"]
+    }
+    for ar_word, cat_filters in keywords_map.items():
+        if ar_word in clean_q:
+            matched = [p for p in manual_pages if any(f in p["filename"].lower() for f in cat_filters)]
+            if matched:
+                return matched[:top_k], ar_word
 
-        return [], None
+    return [], None
 
     # 2. إنذارات الأعطال المحددة (E002, E004...)
     alarms = re.findall(r'\b[A-Za-z]0*\d+\b|\bAlarm\s*\d+\b|\bError\s*\d+\b', clean_q, re.IGNORECASE)
