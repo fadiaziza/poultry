@@ -273,25 +273,81 @@ def search_engine(query, top_k=5):
     if not manual_pages:
         return [], None
     clean_q = query.strip()
-    
-    # 1. مطابقة كود القطعة الرباعي بمرونة الفواصل
-    codes_4 = re.findall(r'([A-Za-z0-9]+)[\.\s\-_/]+([A-Za-z0-9]+)[\.\s\-_/]+([A-Za-z0-9]+)[\.\s\-_/]+([A-Za-z0-9]+)', clean_q)
-    if codes_4:
-        for segs in codes_4:
-            s0, s1, s2, s3 = segs[0], segs[1], segs[2], segs[3]
-            # مطابقة المقاطع الأربعة معاً بأي فاصل أو متصلة
-            pat_full = rf'{re.escape(s0)}[\.\s\-_/]*{re.escape(s1)}[\.\s\-_/]*{re.escape(s2)}[\.\s\-_/]*{re.escape(s3)}'
-            matched = [p for p in manual_pages if re.search(pat_full, p["text"], re.IGNORECASE)]
-            if matched:
-                return matched[:top_k], ".".join(segs)
 
-            # إذا لم يطابق الأربعة معاً، طابق أول مقطعين معاً (الرقم الأساسي للقطعة)
-            pat_base = rf'{re.escape(s0)}[\.\s\-_/]+{re.escape(s1)}'
-            matched_base = [p for p in manual_pages if re.search(pat_base, p["text"], re.IGNORECASE)]
-            if matched_base:
-                return matched_base[:top_k], f"{s0}.{s1}"
+    # 1. استخراج مقاطع الأرقام/الحروف من الاستعلام
+    tokens = re.findall(r'[A-Za-z0-9]+', clean_q)
+    
+    # إذا كان الاستعلام يحتوي على كود قطعة (مقطعين أو أكثر بأرقام وحروف)
+    if len(tokens) >= 2:
+        # أ) استخراج المقاطع المفتاحية المهمة (تجاوز الأصفار المنفردة)
+        significant_tokens = [t for t in tokens if not re.fullmatch(r'0+', t)]
+        
+        # محاولة المطابقة بأهم مقطعين مفتاحيين معاً (مثلاً 0206 مع 012 أو 0668 مع 0095)
+        if len(significant_tokens) >= 2:
+            t1, t2 = significant_tokens[0], significant_tokens[1]
+            pattern_pair = rf'{re.escape(t1)}[\.\s\-_/]+{re.escape(t2)}'
+            matched = [p for p in manual_pages if re.search(pattern_pair, p["text"], re.IGNORECASE)]
+            if matched:
+                return matched[:top_k], f"{t1}.{t2}"
+
+        # ب) المطابقة بأي مقطع رئيسي مميز يتكون من 4 خانات فأكثر (مثل 0206 أو 0668)
+        for t in significant_tokens:
+            if len(t) >= 4:
+                # التأكد من وجوده كرمز قطعة وليس رقماً عشوائياً
+                pattern_single = rf'\b{re.escape(t)}\b'
+                matched = [p for p in manual_pages if re.search(pattern_single, p["text"], re.IGNORECASE)]
+                if matched:
+                    return matched[:top_k], t
+
+        # ج) مطابقة النص المدمج (بدون فواصل أو نقاط)
+        raw_digits = "".join(tokens).lower()
+        if len(raw_digits) >= 6:
+            matched_raw = [p for p in manual_pages if raw_digits in re.sub(r'[^a-zA-Z0-9]', '', p["text"]).lower()]
+            if matched_raw:
+                return matched_raw[:top_k], clean_q
+
         return [], None
 
+    # 2. إنذارات الأعطال المحددة (E002, E004...)
+    alarms = re.findall(r'\b[A-Za-z]0*\d+\b|\bAlarm\s*\d+\b|\bError\s*\d+\b', clean_q, re.IGNORECASE)
+    if alarms:
+        for a in alarms:
+            m_num = re.search(r'\d+', a)
+            if m_num:
+                num = int(m_num.group())
+                pattern = rf'\b(E|Alarm|Error)\s*0*{num}\b'
+                matched = [p for p in manual_pages if re.search(pattern, p["text"], re.IGNORECASE)]
+                if matched:
+                    if any(k in clean_q for k in ["تغليف", "automac", "fabbri"]):
+                        matches_sorted = sorted(matched, key=lambda x: any(k in x["filename"].lower() for k in ["automac", "297", "298"]), reverse=True)
+                        return matches_sorted[:top_k], a.upper()
+                    return matched[:top_k], a.upper()
+
+    # 3. توجيه المنظومات بالاسم العربي
+    keywords_map = {
+        "مايسترو": (["maestro", "eviscerat"], ["infeed", "entry", "positioning", "shackle", "drawing", "guide"]),
+        "تغليف": (["automac", "wrapping", "297", "298"], ["tray", "film", "alarm", "infeed", "stop"]),
+        "تبريد": (["compressor", "chiller", "refrigeration"], ["temperature", "pressure", "oil", "cooling"]),
+        "كمبرسور": (["compressor", "airpol", "atlas"], ["pressure", "filter", "separator", "alarm"]),
+        "رياشة": (["plucker", "picking"], ["finger", "belt", "motor"]),
+        "سمط": (["scalder", "scalding"], ["temperature", "water", "circulation"]),
+        "قوانص": (["gizzard", "peeler", "cd-6000"], ["roller", "peeling", "infeed", "shaft"])
+    }
+    for ar_word, (cat_filters, terms) in keywords_map.items():
+        if ar_word in clean_q:
+            pool = [p for p in manual_pages if any(f in p["filename"].lower() for f in cat_filters)]
+            if not pool:
+                pool = manual_pages
+            scored = []
+            for p in pool:
+                score = sum(1 for t in terms if re.search(r'\b' + re.escape(t) + r'\b', p["text"], re.IGNORECASE))
+                if score > 0:
+                    scored.append((score, p))
+            scored.sort(key=lambda x: x[0], reverse=True)
+            if scored:
+                return [x[1] for x in scored[:top_k]], ar_word
+
+    return [], None
     # 2. إنذارات الأعطال (E002, E004, Alarm...)
     alarms = re.findall(r'\b[A-Za-z]0*\d+\b|\bAlarm\s*\d+\b|\bError\s*\d+\b', clean_q, re.IGNORECASE)
     if alarms:
