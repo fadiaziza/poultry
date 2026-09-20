@@ -12,7 +12,7 @@ import gradio as gr
 from google.cloud import storage
 
 # ==========================================
-# 0. إعدادات السحابة والمنفذ
+# 0. إعدادات السحابة والمنفذ والمجلدات
 # ==========================================
 PORT = int(os.environ.get("PORT", 8080))
 BUCKET_NAME = "aziza-manuals-storage"
@@ -22,7 +22,7 @@ IMAGE_DIR = os.path.join(BASE_DIR, "Real_Parts_Images")
 def sync_data_from_gcs():
     os.makedirs(BASE_DIR, exist_ok=True)
     os.makedirs(IMAGE_DIR, exist_ok=True)
-    print(f"[*] Starting download from GCS bucket: {BUCKET_NAME}...")
+    print(f"[*] جاري مزامنة الملفات والكتالوجات من Google Cloud Storage: {BUCKET_NAME}...")
     try:
         client = storage.Client()
         bucket = client.bucket(BUCKET_NAME)
@@ -38,14 +38,14 @@ def sync_data_from_gcs():
             if not os.path.exists(dest_path):
                 blob.download_to_filename(dest_path)
                 count += 1
-        print(f"[✓] GCS Sync completed. Downloaded {count} files.")
+        print(f"[✓] تمت المزامنة بنجاح. تم تحميل {count} ملفاً.")
     except Exception as e:
-        print(f"[!] Warning during GCS sync: {e}")
+        print(f"[!] تحذير أثناء المزامنة: {e}")
 
 sync_data_from_gcs()
 
 # ==========================================
-# 1. إعدادات تنبيهات الواتساب (Green-API)
+# 1. إعدادات تنبيهات الواتساب المباشرة (Green-API)
 # ==========================================
 ID_INSTANCE = "710722737613"
 API_TOKEN_INSTANCE = "8902219901b2411cb1ebfa944bbfc3d7d499d671111c4fe18e"
@@ -62,7 +62,7 @@ def send_whatsapp_alert(message):
     try:
         requests.post(url, json=payload, timeout=6)
     except Exception as err:
-        print(f"[!] WhatsApp notification error: {err}")
+        print(f"[!] خطأ في إرسال الواتساب: {err}")
 
 # ==========================================
 # 2. جداول كشف الأعطال والإنذارات الفنية بالعربية
@@ -73,52 +73,52 @@ TROUBLESHOOTING_KB = {
         "machine": "ماكينة التغليف Automac 75 / 297",
         "causes": [
             "اتساخ أو انحراف محاذاة حساس دخول الصواني الفوتوسيل (Photocell).",
-            "انحشار صينية عند بوابة السحب أو وصول صواني غير متباعدة بانتظام.",
-            "خلل في شوط أو توقيت دافع الصواني الميكانيكي (Pusher)."
+            "انحشار صينية عند بوابة السحب أو تباعد غير منتظم للصواني القادمة من خط التعبئة.",
+            "خلل في شوط أو تزامن دافع الصواني الميكانيكي (Pusher Arm)."
         ],
         "remedy": [
-            "تنظيف عدسة حساس الدخول بقطعة قماش جافة والتأكد من محاذاة العاكس.",
-            "إزالة الصينية العالقة والتحقق من سلاسة حركة سير التغذية الناقل.",
-            "إعادة ضبط الحساس ومراقبة إشارة الاستشعار، ثم تصفير الإنذار من الشاشة الرئيسية."
+            "تنظيف عدسة حساس الدخول بقطعة قماش ناعمة وجافة والتأكد من محاذاة العاكس.",
+            "إزالة أي صينية منحشرة بالمسار والتأكد من حركة الناقل بسلاسة.",
+            "إعادة ضبط الحساس ومراقبة إشارة الاستشعار، ثم تصفير الإنذار من شاشة التحكم."
         ]
     },
     "E004": {
         "title": "إنذار E004 - انتهاء أو انقطاع فيلم التغليف (Film Reel Empty / Broken)",
         "machine": "ماكينة التغليف Automac",
         "causes": [
-            "نفاد رول فيلم التغليف بالكامل من الحامل السفلي.",
-            "تمزق الفيلم نتيجة شد زائد على بكرات التوجيه أو وجود شوائب.",
-            "عدم إغلاق مشبك ذراع تثبيت الرول بإحكام."
+            "نفاد رول فيلم التغليف في الحامل السفلي بالكامل.",
+            "تمزق الفيلم نتيجة شد مفرط أو عائق على بكرات التوجيه الجانبية.",
+            "عدم قفل ذراع تثبيت الرول بإحكام."
         ],
         "remedy": [
-            "تركيب رول فيلم جديد وتمريره وفق المسار الهندسي المحدد بالملصق.",
-            "فحص مرونة دوران بكرات الشد وضبط عيار الشداد لتفادي القطع المفاجئ."
+            "تركيب رول فيلم جديد وتمريره وفق المسار الهندسي المحدد بالملصق التوضيحي.",
+            "فحص مرونة دوران بكرات الشد وضبط عيار ضغط الشداد لتفادي القطع المفاجئ."
         ]
     },
     "E014": {
-        "title": "إنذار E014 - خلل حرارة حزام اللحام السفلي (Sealing Belt Temp Fault)",
+        "title": "إنذار E014 - حرارة حزام اللحام السفلي خارج النطاق (Sealing Belt Temp Fault)",
         "machine": "ماكينة التغليف Automac",
         "causes": [
             "تلف مقاومة التسخين السفلية أو قراءة غير دقيقة للثرموكابل (Thermocouple).",
-            "فصل القاطع الحراري أو فيوز قدرة وحدة التسخين داخل لوحة الكهرباء."
+            "فصل القاطع الحراري أو فيوز قدرة وحدة التسخين داخل لوحة التحكم الكهربائية."
         ],
         "remedy": [
-            "قياس حرارة سطح اللحام بجهاز خارجي ومقارنتها بقراءة الشاشة.",
-            "فحص التوصيلات الكهربائية لفيوزات وحدة التسخين وإعادة تشغيل المنظومة."
+            "قياس حرارة سطح اللحام بجهاز خارجي ومقارنتها بقراءة شاشة التشغيل.",
+            "فحص التوصيلات الكهربائية لفيوزات وحدة التسخين وإعادة تصفير الإنذار."
         ]
     },
     "مايسترو": {
-        "title": "استكشاف أعطال جهاز فتح البطن وتفريغ الأحشاء (Meyn Maestro Eviscerator)",
-        "machine": "خط التجهيز وتفريغ الأحشاء Meyn Maestro",
+        "title": "استكشاف أعطال جهاز تفريغ الأحشاء وفتح البطن (Meyn Maestro Eviscerator)",
+        "machine": "خط التجهيز Meyn Maestro",
         "causes": [
             "تمزق الكبد أو المرارة: عدم تناسب ارتفاع شوكة الاستخراج (Drawing Spoon) مع متوسط أوزان القطيع.",
-            "عدم ثبات الطيور: تآكل أو اتساخ مرابط التعليق (Shackles) أو ميلان سكة التوجيه المركزية.",
+            "عدم ثبات الطيور: تآكل أو اتساخ مرابط التعليق (Shackles) أو انحراف سكة التوجيه المركزية.",
             "خلل في زمن الفتح: ضعف نوابض الترجيع (Springs) أو تآكل عجلات الكامة (Cam Followers)."
         ],
         "remedy": [
-            "إعادة معايرة الارتفاع المركزي لوحدات Maestro وفق جدول أوزان القطيع الفعلي اليومي.",
+            "إعادة معايرة الارتفاع المركزي لوحدات Maestro وفق جدول متوسط أوزان القطيع اليومي.",
             "فحص نوابض الترجيع وعجلات الكامات واستبدال الأجزاء المستهلكة لضمان الحركة المتزنة.",
-            "التأكد من انتظام ضغط خط غسيل وتزييت الشوكات أثناء الدوران."
+            "التأكد من انتظام ضغط خط غسيل وتزييت الشوكات أثناء الدوران المستمر."
         ]
     },
     "رياشة": {
@@ -129,9 +129,22 @@ TROUBLESHOOTING_KB = {
             "تمزق الجلد أو كسر الأجنحة: تقارب مفرط لبنوك الأصابع أو سرعة دوران زائدة."
         ],
         "remedy": [
-            "استبدال الأصابع المطاطية المكسورة والمتآكلة في جميع الديسكات.",
+            "استبدال الأصابع المطاطية المكسورة والمتآكلة في جميع الديسكات فوراً.",
             "معايرة حرارة مياه السمط وثبات دورة الماء.",
-            "ضبط مسافة بنوك الترييش لتتلامس أطراف الأصابع مع الريش فقط دون صدم الطير."
+            "ضبط مسافة بنوك الترييش لتتلامس أطراف الأصابع فقط مع ريش الطير دون صدمه."
+        ]
+    },
+    "قوانص": {
+        "title": "استكشاف أعطال ماكينة نزع دهون وقشور القوانص (Gizzard Peeler)",
+        "machine": "ماكينة نزع قشور القوانص Meyn CD-6000",
+        "causes": [
+            "عدم تقشير القوانص بالكامل: تآكل أسنان درافيل التقشير (Peeling Rollers) أو ضعف تدفق مياه الغسيل.",
+            "انحشار القوانص عند المدخل: عدم ضبط المسافة البينية بين الدرافيل بدقة."
+        ],
+        "remedy": [
+            "فحص درافيل التقشير وتنظيف مجاري الأسنان من أي مخلفات متراكمة.",
+            "التحقق من ضغط رشاشات المياه الموجهة على منطقة التقشير.",
+            "ضبط خلوص درافيل السحب وفق قياسات كتالوج التشغيل المعتمد."
         ]
     }
 }
@@ -145,7 +158,7 @@ def build_manual_index():
     global manual_pages
     manual_pages = []
     pdf_files = glob.glob(os.path.join(BASE_DIR, "**/*.pdf"), recursive=True)
-    print(f"[*] Indexing {len(pdf_files)} PDF manuals...")
+    print(f"[*] جاري فهرسة {len(pdf_files)} كتالوج فني...")
     for pdf_path in pdf_files:
         filename = os.path.basename(pdf_path)
         try:
@@ -161,7 +174,7 @@ def build_manual_index():
                     })
         except Exception:
             pass
-    print(f"[✓] Successfully indexed {len(manual_pages)} pages.")
+    print(f"[✓] تمت فهرسة {len(manual_pages)} صفحة كتالوج بنجاح.")
 
 build_manual_index()
 
@@ -175,11 +188,11 @@ def render_pdf_page_as_image(filepath, page_num):
         pix.save(output_image_path)
         return output_image_path
     except Exception as e:
-        print(f"[!] PDF page rendering error: {e}")
+        print(f"[!] خطأ في استخراج صورة صفحة الكتالوج: {e}")
         return None
 
 # ==========================================
-# 4. محرك البصمة البصرية المستقر للمستودع
+# 4. محرك البصمة البصرية الدقيق للمستودع
 # ==========================================
 part_images_map = {}
 image_signatures = {}
@@ -208,20 +221,9 @@ def build_image_index():
                     image_signatures[part_no] = (get_img_sig(im), img_path)
             except Exception:
                 pass
-    print(f"[✓] Indexed {len(image_signatures)} part images for visual comparison.")
+    print(f"[✓] تمت فهرسة {len(image_signatures)} صورة لقطع المستودع الميداني.")
 
 build_image_index()
-
-# قراءة الشعار المعتمد
-logo_base64 = ""
-for p in ["logo.png", "/app/logo.png"]:
-    if os.path.exists(p):
-        try:
-            with open(p, "rb") as f:
-                logo_base64 = base64.b64encode(f.read()).decode("utf-8")
-            break
-        except Exception:
-            pass
 
 def match_uploaded_image(uploaded_img):
     if uploaded_img is None or not image_signatures:
@@ -240,10 +242,11 @@ def match_uploaded_image(uploaded_img):
                 min_diff = diff
                 best_part = (part_no, path)
                 
+        # حد التطابق الميداني المعتمد
         if min_diff <= 85:
             return best_part[0], best_part[1]
     except Exception as e:
-        print(f"[!] Vision matching error: {e}")
+        print(f"[!] خطأ في المطابقة البصرية: {e}")
     return None, None
 
 def find_image_for_part(query_text):
@@ -264,12 +267,15 @@ def find_image_for_part(query_text):
             return v[1]
     return None
 
+# ==========================================
+# 5. محرك البحث الصارم (منع الهلوسة والنتائج العشوائية)
+# ==========================================
 def search_engine(query, top_k=5):
     if not manual_pages:
         return [], None
     clean_q = query.strip()
     
-    # 1. المطابقة الصارمة لكود القطعة المكون من 4 مقاطع (فقط الكود الكامل)
+    # 1. المطابقة الصارمة لكود القطعة الكامل ذي 4 مقاطع
     codes_4 = re.findall(r'([A-Za-z0-9]+)[\.\s\-_/]+([A-Za-z0-9]+)[\.\s\-_/]+([A-Za-z0-9]+)[\.\s\-_/]+([A-Za-z0-9]+)', clean_q)
     if codes_4:
         for segs in codes_4:
@@ -277,9 +283,10 @@ def search_engine(query, top_k=5):
             matched = [p for p in manual_pages if re.search(pattern, p["text"], re.IGNORECASE)]
             if matched:
                 return matched[:top_k], ".".join(segs)
+        # إيقاف البحث إذا كان المدخل رقم قطعة ولم يتطابق بالكامل (منع خلط الكتالوجات)
         return [], None
 
-    # 2. إنذارات الأعطال المحددة (E002, E004...)
+    # 2. إنذارات الأعطال المحددة (E002, E004, Alarm...)
     alarms = re.findall(r'\b[A-Za-z]0*\d+\b|\bAlarm\s*\d+\b|\bError\s*\d+\b', clean_q, re.IGNORECASE)
     if alarms:
         for a in alarms:
@@ -294,7 +301,7 @@ def search_engine(query, top_k=5):
                         return matches_sorted[:top_k], a.upper()
                     return matched[:top_k], a.upper()
 
-    # 3. توجيه المنظومات بالاسم العربي الصريح
+    # 3. توجيه المنظومات بالاسم العربي المحدد
     keywords_map = {
         "مايسترو": (["maestro", "eviscerat"], ["infeed", "entry", "positioning", "shackle", "drawing", "guide"]),
         "تغليف": (["automac", "wrapping", "297", "298"], ["tray", "film", "alarm", "infeed", "stop"]),
@@ -302,7 +309,7 @@ def search_engine(query, top_k=5):
         "كمبرسور": (["compressor", "airpol", "atlas"], ["pressure", "filter", "separator", "alarm"]),
         "رياشة": (["plucker", "picking"], ["finger", "belt", "motor"]),
         "سمط": (["scalder", "scalding"], ["temperature", "water", "circulation"]),
-        "قوانص": (["gizzard", "peeler"], ["roller", "peeling", "infeed"])
+        "قوانص": (["gizzard", "peeler", "cd-6000"], ["roller", "peeling", "infeed", "shaft"])
     }
     for ar_word, (cat_filters, terms) in keywords_map.items():
         if ar_word in clean_q:
@@ -321,7 +328,7 @@ def search_engine(query, top_k=5):
     return [], None
 
 # ==========================================
-# 5. المساعد الهندسي الذكي المتكامل
+# 6. المساعد الفني الميداني (Maintenance Copilot)
 # ==========================================
 def maintenance_copilot(query, input_image=None):
     clean_q = query.strip() if query else ""
@@ -329,7 +336,7 @@ def maintenance_copilot(query, input_image=None):
     catalog_page_path = None
     response = []
 
-    # 1. معالجة الصورة المرفوعة
+    # 1. فحص الصورة المرفوعة
     if input_image is not None:
         matched_part_no, matched_img = match_uploaded_image(input_image)
         if matched_part_no:
@@ -346,9 +353,9 @@ def maintenance_copilot(query, input_image=None):
                 return "❌ لم يتم العثور على صورة متطابقة بصرياً مع قطع المستودع المفهرسة. يرجى إدخال رقم القطعة كتابةً.\n---\n📲 تم إرسال إشعار لطاقم الصيانة بالمتابعة.", None, None
 
     if not clean_q:
-        return "⚠️ يرجى استخدام الميكروفون بالصوت، أو كتابة رقم القطعة / كود الإنذار، أو رفع صورة القطعة.", None, None
+        return "⚠️ يرجى استخدام زر التحدث الصوتي، أو كتابة رقم القطعة / كود الإنذار، أو رفع صورة القطعة.", None, None
 
-    # 2. فحص قاعدة استكشاف الأعطال والإنذارات (Troubleshooting Tables)
+    # 2. فحص قاعدة الأعطال والإنذارات
     kb_hit = None
     alarm_match = re.search(r'\b(E0*\d+|Alarm\s*\d+)\b', clean_q, re.IGNORECASE)
     if alarm_match:
@@ -370,12 +377,12 @@ def maintenance_copilot(query, input_image=None):
         response.append("### 🔍 الأسباب المحتملة (Possible Causes):")
         for c in kb_hit['causes']:
             response.append(f"- {c}")
-        response.append("\n### 🛠️ خطوات الضبط والمعالجة الفورية (Remedy):")
+        response.append("\n### 🛠️ خطوات الضبط والمعالجة الهندسية (Remedy):")
         for idx, r in enumerate(kb_hit['remedy'], 1):
             response.append(f"{idx}. {r}")
         response.append("\n---\n")
 
-    # 3. فحص صفحات الكتالوجات واستخراج صورة الصفحة
+    # 3. فحص الكتالوجات المطابقة حصرياً واستخراج صورة الصفحة
     hits, matched_term = search_engine(clean_q, top_k=4)
     if not matched_image_path:
         matched_image_path = find_image_for_part(matched_term if matched_term else clean_q)
@@ -396,7 +403,6 @@ def maintenance_copilot(query, input_image=None):
                 snippet = " ".join(words[:40])
             response.append(f"  > *\"...{snippet}...\"*\n")
             
-        # تحويل أول صفحة مطابقة لصورة ملونة عالية الوضوح
         catalog_page_path = render_pdf_page_as_image(hits[0]['filepath'], hits[0]['page'])
     else:
         if not kb_hit:
@@ -405,7 +411,7 @@ def maintenance_copilot(query, input_image=None):
     if matched_image_path:
         response.append("\n🖼️ **تم إرفاق صورة القطعة الحقيقية من أرشيف المستودع الميداني أدناه.**")
 
-    # 4. إشعار الواتساب الفوري المباشر
+    # 4. إرسال تنبيه الواتساب المباشر
     tz = pytz.timezone('Asia/Hebron')
     timestamp = datetime.now(tz).strftime('%Y-%m-%d %I:%M %p')
 
@@ -424,7 +430,20 @@ def maintenance_copilot(query, input_image=None):
 
     return "\n".join(response), matched_image_path, catalog_page_path
 
+# ==========================================
+# 7. واجهة المستخدم الرسومية (Gradio Interface)
+# ==========================================
 total_manuals = len(glob.glob(os.path.join(BASE_DIR, "**/*.pdf"), recursive=True))
+
+logo_base64 = ""
+for p in ["logo.png", "/app/logo.png"]:
+    if os.path.exists(p):
+        try:
+            with open(p, "rb") as f:
+                logo_base64 = base64.b64encode(f.read()).decode("utf-8")
+            break
+        except Exception:
+            pass
 
 logo_html = f'<img src="data:image/png;base64,{logo_base64}" style="width: 100%; height: 100%; object-fit: contain;">' if logo_base64 else '<span style="font-size: 20px; font-weight: 900; color: #1b5e20;">عزيزا</span>'
 
@@ -448,6 +467,7 @@ HEADER_HTML = f"""
     </div>
 </div>
 """
+
 VOICE_HTML = """
 <div style="text-align: center; margin-bottom: 12px;">
     <button id="aziza_mic_btn" type="button" style="background-color: #2e7d32; color: #ffffff; border: none; padding: 12px 28px; font-size: 15px; font-weight: bold; border-radius: 30px; cursor: pointer; box-shadow: 0 4px 10px rgba(0,0,0,0.25);">
@@ -463,7 +483,7 @@ function attachMicHandler() {
     btn.onclick = function() {
         var SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
         if (!SpeechRecognition) {
-            alert("يرجى فتح الرابط من متصفح Google Chrome على الهاتف أو الكمبيوتر لتفعيل ميزة الصوت.");
+            alert("يرجى فتح الرابط من متصفح Google Chrome لتفعيل ميزة التحدث بالصوت.");
             return;
         }
 
@@ -504,10 +524,10 @@ function attachMicHandler() {
     };
 }
 
-// تشغيل المستمع بمجرد اكتمال تحميل الصفحة
 setTimeout(attachMicHandler, 1500);
 </script>
 """
+
 with gr.Blocks(title="منصة الصيانة الهندسية - مسلخ عزيزا") as demo:
     gr.HTML(HEADER_HTML)
     gr.HTML(VOICE_HTML)
