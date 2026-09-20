@@ -117,7 +117,7 @@ TROUBLESHOOTING_KB = {
         ],
         "remedy": [
             "إعادة معايرة الارتفاع المركزي لوحدات Maestro وفق جدول متوسط أوزان القطيع اليومي.",
-            "فحص نوابض الترجيع وعجلات الكامات واستبدال الأجزاء المستهلكة لضمان الحركة المتزنة.",
+            "فحص نوابض الترجيع وعجلات الكامات واستبدال الأجزاء المستلكة لضمان الحركة المتزنة.",
             "التأكد من انتظام ضغط خط غسيل وتزييت الشوكات أثناء الدوران المستمر."
         ]
     },
@@ -242,7 +242,6 @@ def match_uploaded_image(uploaded_img):
                 min_diff = diff
                 best_part = (part_no, path)
                 
-        # حد التطابق الميداني المعتمد
         if min_diff <= 85:
             return best_part[0], best_part[1]
     except Exception as e:
@@ -268,25 +267,32 @@ def find_image_for_part(query_text):
     return None
 
 # ==========================================
-# 5. محرك البحث الصارم (منع الهلوسة والنتائج العشوائية)
+# 5. محرك البحث الذكي والمتوازن (Strict & Resilient)
 # ==========================================
 def search_engine(query, top_k=5):
     if not manual_pages:
         return [], None
     clean_q = query.strip()
     
-    # 1. المطابقة الصارمة لكود القطعة الكامل ذي 4 مقاطع
+    # 1. مطابقة كود القطعة الرباعي بمرونة الفواصل
     codes_4 = re.findall(r'([A-Za-z0-9]+)[\.\s\-_/]+([A-Za-z0-9]+)[\.\s\-_/]+([A-Za-z0-9]+)[\.\s\-_/]+([A-Za-z0-9]+)', clean_q)
     if codes_4:
         for segs in codes_4:
-            pattern = re.escape(segs[0]) + r'[\.\s\-_]+' + re.escape(segs[1]) + r'[\.\s\-_]+' + re.escape(segs[2]) + r'[\.\s\-_]+' + re.escape(segs[3])
-            matched = [p for p in manual_pages if re.search(pattern, p["text"], re.IGNORECASE)]
+            s0, s1, s2, s3 = segs[0], segs[1], segs[2], segs[3]
+            # مطابقة المقاطع الأربعة معاً بأي فاصل أو متصلة
+            pat_full = rf'{re.escape(s0)}[\.\s\-_/]*{re.escape(s1)}[\.\s\-_/]*{re.escape(s2)}[\.\s\-_/]*{re.escape(s3)}'
+            matched = [p for p in manual_pages if re.search(pat_full, p["text"], re.IGNORECASE)]
             if matched:
                 return matched[:top_k], ".".join(segs)
-        # إيقاف البحث إذا كان المدخل رقم قطعة ولم يتطابق بالكامل (منع خلط الكتالوجات)
+
+            # إذا لم يطابق الأربعة معاً، طابق أول مقطعين معاً (الرقم الأساسي للقطعة)
+            pat_base = rf'{re.escape(s0)}[\.\s\-_/]+{re.escape(s1)}'
+            matched_base = [p for p in manual_pages if re.search(pat_base, p["text"], re.IGNORECASE)]
+            if matched_base:
+                return matched_base[:top_k], f"{s0}.{s1}"
         return [], None
 
-    # 2. إنذارات الأعطال المحددة (E002, E004, Alarm...)
+    # 2. إنذارات الأعطال (E002, E004, Alarm...)
     alarms = re.findall(r'\b[A-Za-z]0*\d+\b|\bAlarm\s*\d+\b|\bError\s*\d+\b', clean_q, re.IGNORECASE)
     if alarms:
         for a in alarms:
@@ -301,7 +307,7 @@ def search_engine(query, top_k=5):
                         return matches_sorted[:top_k], a.upper()
                     return matched[:top_k], a.upper()
 
-    # 3. توجيه المنظومات بالاسم العربي المحدد
+    # 3. توجيه المنظومات بالاسم العربي الصريح
     keywords_map = {
         "مايسترو": (["maestro", "eviscerat"], ["infeed", "entry", "positioning", "shackle", "drawing", "guide"]),
         "تغليف": (["automac", "wrapping", "297", "298"], ["tray", "film", "alarm", "infeed", "stop"]),
@@ -382,7 +388,7 @@ def maintenance_copilot(query, input_image=None):
             response.append(f"{idx}. {r}")
         response.append("\n---\n")
 
-    # 3. فحص الكتالوجات المطابقة حصرياً واستخراج صورة الصفحة
+    # 3. فحص الكتالوجات واستخراج صورة الصفحة
     hits, matched_term = search_engine(clean_q, top_k=4)
     if not matched_image_path:
         matched_image_path = find_image_for_part(matched_term if matched_term else clean_q)
