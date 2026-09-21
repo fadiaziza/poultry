@@ -27,7 +27,7 @@ if GEMINI_API_KEY:
     try:
         ai_client = genai.Client(api_key=GEMINI_API_KEY)
     except Exception as e:
-        print(f"[!] خطأ في تهيئة عميل Gemini API: {e}")
+        print(f"[!] Warning initializing Gemini API: {e}")
 
 def sync_data_from_gcs():
     os.makedirs(BASE_DIR, exist_ok=True)
@@ -145,63 +145,10 @@ for p in ["logo.png", "/app/logo.png"]:
             pass
 
 # ==========================================
-# 3. دليل الأعطال الميداني المباشر لماكينات التغليف Automac
-# ==========================================
-AUTOMAC_FAULTS_GUIDE = {
-    "E002": {
-        "title": "حساس تغذية الصواني / توقف في سير الدخول (Infeed Tray Jam / Photocell)",
-        "cause": "عدم وصول الصينية في الوقت المحدد أو وجود اتساخ/انحراف في عاكس خلايا المدخل الضوئية.",
-        "steps": [
-            "1. فحص مجرى دخول الصواني والتأكد من خلوه من أي صواني مائلة أو عوائق ميكانيكية.",
-            "2. تنظيف عدسة وعاكس حساسات الدخول الضوئية (Photocell) بقطعة قماش جافة وخالية من الزيوت.",
-            "3. مراقبة لمبة البيان (LED) على الحساس عند تمرير صينية يدوياً للتحقق من وصول الإشارة إلى الـ PLC.",
-            "4. التحقق من سلامة قواشيط سير الدخول وعدم وجود انزلاق ميكانيكي أثناء الدوران."
-        ]
-    },
-    "E004": {
-        "title": "انقطاع أو نفاد رول التغليف (Film Broken or Empty)",
-        "cause": "نفاد رول النايلون أو انقطاعه أثناء السحب، أو خلل في مفتاح نهاية الشوط لذراع الشد.",
-        "steps": [
-            "1. معاينة رول التغليف والتأكد من عدم نفاد الفيلم بالكامل أو تمزقه.",
-            "2. فحص مسار مرور الفيلم عبر بكرات التوجيه والموازنة والتأكد من خلوها من بقايا نايلون ملتصق.",
-            "3. فحص مفتاح نهاية المشوار (Microswitch) الخاص بذراع الشد والتأكد من تحركه بسلاسة.",
-            "4. إعادة تلقيم النايلون وتصفير الإنذار (Reset) من شاشة التشغيل."
-        ]
-    },
-    "E008": {
-        "title": "فصل القاطع الحراري للمحركات أو دائرة الأمان مفتوحة (Thermal Overload / Safety Circuit)",
-        "cause": "فصل الأوفرلود الحراري لأحد المحركات نتيجة حمل زائد، أو فتح مفتاح طوارئ أو حساس باب الأمان.",
-        "steps": [
-            "1. التأكد من إغلاق أبواب الحماية الشفافة وسلامة إشارات الحساسات المغناطيسية للأبواب.",
-            "2. التأكد من فك تعشيق كافة أزرار التوقف في حالات الطوارئ (Emergency Stop).",
-            "3. فتح لوحة الكهرباء وفحص المرحلات الحرارية (Overloads) وإعادة ضبط المفصول منها بعد التأكد من برودته.",
-            "4. فحص محركات السحب واللحام والتأكد من خلو محاور الدوران من أي انحشار ميكانيكي."
-        ]
-    },
-    "W015": {
-        "title": "انخفاض ضغط الهواء المضغوط أو التزييت (Low Air Pressure / Lubrication Alert)",
-        "cause": "انخفاض ضغط الهواء المغذي للماكينة عن 6 بار، أو اقتراب نفاد الزيت في خزان التزييت الآلي.",
-        "steps": [
-            "1. فحص ساعة قياس ضغط الهواء الرئيسية للتأكد من وصول 6 إلى 6.5 بار مستقر.",
-            "2. تفريغ فلتر فصل المياه (Air Filter / Water Separator) وفحص عمل المنظم الرقمي.",
-            "3. تفقد مستوى الزيت داخل خزان منظومة التزييت المركزي وتعبئته بالزيت المخصص إن لزم.",
-            "4. فحص خراطيم الهواء المؤدية للبساتن والتأكد من عدم وجود تسريب مسموع."
-        ]
-    },
-    "W001": {
-        "title": "تحذير اقتراب نفاد رول النايلون (Film Reel Low Warning)",
-        "cause": "اقتراب قطر رول التغليف من النهاية دون إيقاف الخط.",
-        "steps": [
-            "1. تجهيز رول بديل بالقرب من وحدة التلقيم لتبديله فور توقف الخط وتفادي الهدر الزمني.",
-            "2. تفقد حركة ذراع استشعار قطر الرول والتأكد من نظافة محورها."
-        ]
-    }
-}
-
-# ==========================================
-# 4. محرك استخراج صور الكتالوجات والبحث والمساعد الذكي
+# 3. محرك استخراج صور الكتالوجات والبحث والمساعد الذكي
 # ==========================================
 def render_pdf_page_to_image(filepath, page_num):
+    """تحويل صفحة الـ PDF المحددة إلى صورة واضحة بدقة 150 DPI"""
     try:
         doc = fitz.open(filepath)
         page = doc[page_num - 1]
@@ -210,27 +157,28 @@ def render_pdf_page_to_image(filepath, page_num):
         pix.save(out_img_path)
         return out_img_path
     except Exception as e:
-        print(f"[!] خطأ أثناء تحويل صفحة الـ PDF إلى صورة: {e}")
+        print(f"[!] Error rendering PDF page to image: {e}")
         return None
 
 def ask_gemini_engineer(user_query, context_text):
+    """صياغة خطوات الفحص الهندسي باللغة الإنجليزية التقنية الصارمة من الكتالوج"""
     if not ai_client or not context_text:
         return ""
     prompt = f"""
-أنت مهندس صيانة وأتمتة صناعية أول في مسلخ دواجن عزيزا، متخصص في خطوط Meyn، ماكينات التغليف Automac، ومنظومات التبريد والكمبرسورات.
-المطلوب منك: تحليل استعلام الفني استناداً حصراً إلى النص الفني المستخرج من الكتالوج الرسمي المرفق، وتقديم خطوات فحص ميدانية عملية وصارمة.
+You are a Lead Automation & Industrial Maintenance Engineer at a poultry processing plant, highly specialized in Meyn evisceration lines, Automac stretch film wrapping machines (Fabbri Group), and industrial refrigeration.
+Based STRICTLY on the technical manual excerpt below, provide a professional, structured troubleshooting procedure in English for the field maintenance technician.
 
-طلب أو بلاغ الفني:
+Fault / Query:
 "{user_query}"
 
-المحتوى الفني المعتمد من صفحة الكتالوج:
-\"\"\"{context_text[:2500]}\"\"\"
+Technical Manual Page Content:
+\"\"\"{context_text[:3500]}\"\"\"
 
-قواعد الإجابة:
-1. اذكر التشخيص الفني المباشر وسبب الخلل باللغة العربية الواضحة.
-2. ضع خطوات فحص وإصلاح متسلسلة (1، 2، 3...).
-3. ركز عملياً على: الحساسات، الهواء المضغوط، المحاذاة الميكانيكية، وتوصيلات الـ PLC.
-4. التزم تماماً بالبيانات الفنية ولا تذكر أي استنتاجات غير مثبتة في النص.
+Response Format Requirements:
+- Header: Alarm/Warning Code and Official Description.
+- Root Cause: One concise sentence explaining the root cause according to the manual.
+- Corrective Actions / Checklist: Numbered, direct, practical technical steps (e.g. 1. Check photocell sensor alignment, 2. Verify pneumatic pressure >= 6 bar, 3. Inspect microswitch contacts, 4. Reset thermal overload).
+- Strictly in English. No introductory chatter or generic closing phrases. Keep it direct and professional.
 """
     try:
         response = ai_client.models.generate_content(
@@ -288,7 +236,7 @@ def search_engine(query, top_k=3):
         return [], None, None
     clean_q = query.strip()
 
-    # 1. التمييز الصريح بين الإنذارات (E) والتحذيرات (W) لماكينات التغليف
+    # 1. التمييز بين الإنذارات (E) والتحذيرات (W) لماكينات التغليف
     alarm_match = re.search(r'\b([EWew])\s*0*(\d+)\b', clean_q)
     if alarm_match:
         prefix = alarm_match.group(1).upper()
@@ -367,44 +315,54 @@ def maintenance_copilot(query, input_image=None):
     if not matched_warehouse_image and hit_type != "alarm":
         matched_warehouse_image = find_image_for_part(matched_term if matched_term else clean_q)
 
-    # معالجة أكواد الإنذارات والتحذيرات
+    # ==========================================
+    # أولاً: معالجة الإنذارات والتنبيهات (E / W)
+    # ==========================================
     if hit_type == "alarm" and matched_term:
         prefix = matched_term[0]
-        alarm_header = "🚨 **إنذار توقف حرج (Alarm)**" if prefix == "E" else "⚠️ **تنبيه تحذيري وقائي (Warning)**"
-        response.append(f"### {alarm_header}: `{matched_term}`\n")
+        alarm_status = "CRITICAL ALARM (MACHINE STOPPED)" if prefix == "E" else "WARNING ALERT (PREVENTIVE)"
         
-        if matched_term in AUTOMAC_FAULTS_GUIDE:
-            info = AUTOMAC_FAULTS_GUIDE[matched_term]
-            response.append(f"📌 **التشخيص:** {info['title']}")
-            response.append(f"🔍 **السبب الميداني:** {info['cause']}\n")
-            response.append("🛠️ **خطوات الفحص والإصلاح الميداني:**")
-            for step in info["steps"]:
-                response.append(f"  {step}")
-
+        # 1. وضع خطوات الفحص الإنجليزية في قمة التقرير
         if hits:
-            response.append(f"\n📖 **المرجع الفني في الكتالوج:** `{hits[0]['filename']}` (صفحة {hits[0]['page']})")
-            matched_catalog_page_img = render_pdf_page_to_image(hits[0]['filepath'], hits[0]['page'])
-            
-            # استدعاء Gemini لتقديم تحليل إضافي بناءً على صفحة الكتالوج
             ai_insight = ask_gemini_engineer(clean_q, hits[0]['text'])
             if ai_insight:
-                response.append("\n---\n### 🤖 التوجيه الهندسي المتقدم (Gemini Co-Pilot):\n" + ai_insight)
+                response.append(f"## 🛠️ {matched_term} - {alarm_status}\n")
+                response.append(ai_insight)
+                response.append("\n" + "="*55 + "\n")
+            
+            # 2. المرجع الفني الرسمي من الكتالوج
+            response.append(f"📖 **Technical Manual Reference:** `{hits[0]['filename']}` (Page {hits[0]['page']})")
+            matched_catalog_page_img = render_pdf_page_to_image(hits[0]['filepath'], hits[0]['page'])
         else:
-            response.append("\nℹ️ تم توثيق الإنذار ولم يُعثر على الصفحة المقابلة في الكتالوجات الحالية.")
+            response.append(f"⚠️ No direct catalog page found for `{matched_term}` in current indexed manuals.")
 
-    # معالجة أرقام القطع والمنظومات
+    # ==========================================
+    # ثانياً: معالجة أرقام القطع والمنظومات
+    # ==========================================
     else:
         if hits:
-            response.append(f"### ✅ تم العثور على مراجع مطابقة في الكتالوجات:")
-            for h in hits:
-                response.append(f"- **الملف:** `{h['filename']}` (صفحة {h['page']})")
-            
-            matched_catalog_page_img = render_pdf_page_to_image(hits[0]['filepath'], hits[0]['page'])
-            
-            # تحليل محتوى الكتالوج عبر Gemini
             ai_insight = ask_gemini_engineer(clean_q, hits[0]['text'])
             if ai_insight:
-                response.append("\n---\n### 🤖 الشرح الهندسي والتوجيه الميداني (Gemini):\n" + ai_insight)
+                response.append("## 🔧 Technical Inspection & Part Details:\n")
+                response.append(ai_insight)
+                response.append("\n" + "="*55 + "\n")
+
+            response.append("### ✅ Catalog References Found:")
+            for h in hits:
+                response.append(f"- **Manual:** `{h['filename']}` (Page {h['page']})")
+                text = h['text'].replace("\r", "")
+                target = matched_term if matched_term else clean_q
+                idx = text.lower().find(target.lower().split()[0])
+                if idx != -1:
+                    start = max(0, idx - 40)
+                    end = min(len(text), idx + len(target) + 120)
+                    snippet = text[start:end].replace("\n", " ").strip()
+                else:
+                    words = text.split()
+                    snippet = " ".join(words[:30])
+                response.append(f"  > *\"...{snippet}...\"*\n")
+            
+            matched_catalog_page_img = render_pdf_page_to_image(hits[0]['filepath'], hits[0]['page'])
         else:
             response.append(f"❌ لم يتم العثور على أي تطابق لطلبك `{clean_q}` داخل صفحات الكتالوجات.")
 
@@ -430,7 +388,7 @@ def maintenance_copilot(query, input_image=None):
     return "\n".join(response), matched_warehouse_image, matched_catalog_page_img
 
 # ==========================================
-# 5. واجهة Gradio الرسمية
+# 4. واجهة Gradio الرسمية
 # ==========================================
 total_manuals = len(glob.glob(os.path.join(BASE_DIR, "**/*.pdf"), recursive=True))
 
@@ -467,7 +425,7 @@ with gr.Blocks(title="منصة الصيانة الهندسية الذكية - م
         with gr.Column(scale=1):
             query_input = gr.Textbox(
                 label="أدخل كود الإنذار (E002) أو التنبيه (W015) / رقم القطعة (4 مقاطع) / وصف العطل",
-                placeholder="أمثلة: E002 | W015 | عطل في ذراع سحب المايسترو | 0990.AD05.007.00 | 89.3500.160.0085",
+                placeholder="أمثلة: E002 | W010 | عطل في ذراع سحب المايسترو | 0990.AD05.007.00 | 89.3500.160.0085",
                 lines=2
             )
             image_input = gr.Image(type="pil", label="أو ارفع صورة القطعة للتعرف البصري عليها ومطابقتها")
