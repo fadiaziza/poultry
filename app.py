@@ -83,6 +83,7 @@ def build_manual_index():
                 if len(page_text) > 15:
                     manual_pages.append({
                         "filename": filename,
+                        "filepath": pdf_path,
                         "page": page_num + 1,
                         "text": page_text
                     })
@@ -92,8 +93,6 @@ def build_manual_index():
 
 build_manual_index()
 
-# فهرسة الصور بصرياً باستخدام توقيع البكسلات المصغرة (Thumbnail Signature)
-# طريقة خفيفة وسريعة ولا تستهلك رام إطلاقاً
 part_images_map = {}
 image_signatures = {}
 
@@ -126,7 +125,6 @@ def build_image_index():
 
 build_image_index()
 
-# قراءة الشعار المحلي المعتمد logo.png
 logo_base64 = ""
 for p in ["logo.png", "/app/logo.png"]:
     if os.path.exists(p):
@@ -138,8 +136,22 @@ for p in ["logo.png", "/app/logo.png"]:
             pass
 
 # ==========================================
-# 3. محرك المطابقة البصرية والبحث الصارم
+# 3. محرك استخراج صور الصفحات والمطابقة والبحث
 # ==========================================
+def render_pdf_page_to_image(filepath, page_num):
+    """تحويل صفحة الـ PDF المحددة إلى صورة بجودة عالية للعرض المباشر"""
+    try:
+        doc = fitz.open(filepath)
+        page = doc[page_num - 1]
+        # تكبير الصفحة بنسبة 2x لضمان وضوح المخططات والأرقام
+        pix = page.get_pixmap(dpi=150)
+        out_img_path = f"/tmp/page_{os.path.basename(filepath)}_{page_num}.png"
+        pix.save(out_img_path)
+        return out_img_path
+    except Exception as e:
+        print(f"[!] خطأ أثناء تحويل صفحة الـ PDF إلى صورة: {e}")
+        return None
+
 def match_uploaded_image(uploaded_img):
     """مقارنة الصورة المرفوعة مع صور المستودع"""
     if uploaded_img is None or not image_signatures:
@@ -150,16 +162,14 @@ def match_uploaded_image(uploaded_img):
             
         up_sig = get_img_sig(uploaded_img)
         best_part = None
-        min_diff = 256 # الحد الأقصى للاختلاف (16x16 = 256)
+        min_diff = 256
         
         for part_no, (sig, path) in image_signatures.items():
-            # حساب نسبة التطابق بين البصمتين
             diff = sum(c1 != c2 for c1, c2 in zip(up_sig, sig))
             if diff < min_diff:
                 min_diff = diff
                 best_part = (part_no, path)
                 
-        # إذا كانت نسبة التشابه مقبولة (أقل من 65 بت اختلاف من أصل 256)
         if min_diff <= 65:
             return best_part[0], best_part[1]
     except Exception as e:
@@ -189,14 +199,13 @@ def search_engine(query, top_k=3):
         return [], None
     clean_q = query.strip()
 
-    # 1. استخراج ومطابقة كود القطعة الرباعي الصريح (Article nr)
-    # النمط يطابق: 0990.BR00.001.36 أو 0000.D409.003.01
-    code_match = re.search(r'([A-Za-z0-9]{4})\.([A-Za-z0-9]{4})\.([A-Za-z0-9]{3,4})\.([A-Za-z0-9]{2,4})', clean_q)
+    # 1. استخراج ومطابقة كود القطعة الصريح (Article nr)
+    # يدعم عائلة 0990 (4 خانات) وعائلة 89 (خانتين أو أكثر) في المقطع الأول
+    code_match = re.search(r'([A-Za-z0-9]{2,4})\.([A-Za-z0-9]{4})\.([A-Za-z0-9]{3,4})\.([A-Za-z0-9]{2,4})', clean_q)
     if code_match:
-        full_code = code_match.group(0) # الكود كاملاً بنقاطه
-        spaced_code = " ".join(code_match.groups()) # الكود بمسافات لو كان الجدول مفصولاً بمسافات
+        full_code = code_match.group(0)
+        spaced_code = " ".join(code_match.groups())
         
-        # البحث الصارم: يجب أن يظهر الكود الرباعي كاملاً في نص الصفحة
         matched = [
             p for p in manual_pages 
             if full_code.lower() in p["text"].lower() or spaced_code.lower() in p["text"].lower()
@@ -204,7 +213,6 @@ def search_engine(query, top_k=3):
         if matched:
             return matched[:top_k], full_code
         
-        # إذا لم يظهر الكود كاملاً، نتوقف فوراً ولا نلجأ لتخمين كلمات عامة
         return [], None
 
     # 2. إنذارات وأعطال ماكينات التغليف Automac (مثل: E002, E004)
@@ -239,9 +247,11 @@ def search_engine(query, top_k=3):
                 return matched[:top_k], ar_word
 
     return [], None
+
 def maintenance_copilot(query, input_image=None):
     clean_q = query.strip() if query else ""
-    matched_image_path = None
+    matched_warehouse_image = None
+    matched_catalog_page_img = None
     response = []
 
     # معالجة الصورة المرفوعة والمطابقة البصرية
@@ -249,27 +259,23 @@ def maintenance_copilot(query, input_image=None):
         matched_part_no, matched_img = match_uploaded_image(input_image)
         if matched_part_no:
             response.append(f"📸 **تم التعرف بصرياً على صورة القطعة:** `{matched_part_no}`")
-            matched_image_path = matched_img
+            matched_warehouse_image = matched_img
             if not clean_q:
                 clean_q = matched_part_no
         else:
             if not clean_q:
-                # إشعار الواتساب عند تعذر المطابقة البصرية
                 tz = pytz.timezone('Asia/Hebron')
                 timestamp = datetime.now(tz).strftime('%Y-%m-%d %I:%M %p')
                 fail_msg = f"⚠️ *تنبيه فحص ميداني - مسلخ عزيزا*\n⏰ الوقت: {timestamp}\n📸 تم رفع صورة قطعة لم يتعرف عليها النظام تلقائياً، يرجى التحقق اليدوي."
                 send_whatsapp_alert(fail_msg)
-                return "❌ لم يتم العثور على صورة متطابقة بصرياً مع قطع المستودع المفهرسة. يرجى إدخال رقم القطعة كتابةً.\n---\n📲 تم إرسال إشعار لطاقم الصيانة بالمتابعة.", None
+                return "❌ لم يتم العثور على صورة متطابقة بصرياً مع قطع المستودع المفهرسة. يرجى إدخال رقم القطعة كتابةً.\n---\n📲 تم إرسال إشعار لطاقم الصيانة بالمتابعة.", None, None
 
     if not clean_q:
-        return "⚠️ يرجى إدخال رقم القطعة (4 مقاطع)، كود الإنذار (مثل E002)، أو رفع صورة القطعة.", None
+        return "⚠️ يرجى إدخال رقم القطعة (4 مقاطع)، كود الإنذار (مثل E002)، أو رفع صورة القطعة.", None, None
 
-    if not clean_q:
-        return "⚠️ يرجى إدخال رقم القطعة (4 مقاطع)، كود الإنذار (مثل E002)، أو رفع صورة القطعة.", None
-
-    hits, matched_term = search_engine(clean_q, top_k=4)
-    if not matched_image_path:
-        matched_image_path = find_image_for_part(matched_term if matched_term else clean_q)
+    hits, matched_term = search_engine(clean_q, top_k=3)
+    if not matched_warehouse_image:
+        matched_warehouse_image = find_image_for_part(matched_term if matched_term else clean_q)
 
     if hits:
         response.append(f"### ✅ تم العثور على مراجع مطابقة في الكتالوجات:")
@@ -286,31 +292,34 @@ def maintenance_copilot(query, input_image=None):
                 words = text.split()
                 snippet = " ".join(words[:40])
             response.append(f"  > *\"...{snippet}...\"*\n")
+        
+        # استخراج صورة الصفحة الأولى المطابقة من الكتالوج تلقائياً
+        matched_catalog_page_img = render_pdf_page_to_image(hits[0]['filepath'], hits[0]['page'])
     else:
         response.append(f"❌ لم يتم العثور على أي تطابق لطلبك `{clean_q}` داخل صفحات الكتالوجات.")
 
-    if matched_image_path:
-        response.append("\n🖼️ **تم إرفاق صورة القطعة الحقيقية من أرشيف المستودع الميداني أدناه.**")
+    if matched_warehouse_image:
+        response.append("\n🖼️ **تم إرفاق صورة القطعة الحقيقية من أرشيف المستودع الميداني.**")
+    if matched_catalog_page_img:
+        response.append("📖 **تم استخراج صورة صفحة الكتالوج والرسم الهندسي أدناه.**")
 
-   # إشعار الواتساب التلقائي (يعمل مع الصور، أرقام القطع، وبلاغات الأعطال)
+    # إشعار الواتساب التلقائي
     tz = pytz.timezone('Asia/Hebron')
     timestamp = datetime.now(tz).strftime('%Y-%m-%d %I:%M %p')
 
-    # تجهيز رسالة التنبيه الشاملة
     alert_msg = f"🔔 *إشعار صيانة ومطابقة - مسلخ عزيزا*\n"
     alert_msg += f"⏰ الوقت: {timestamp}\n"
     alert_msg += f"🔍 الاستعلام / رقم القطعة: `{clean_q}`\n"
     
     if hits:
         alert_msg += f"📖 المرجع الفني: {hits[0]['filename']} (صفحة {hits[0]['page']})\n"
-    if matched_image_path:
+    if matched_warehouse_image:
         alert_msg += f"🖼️ الحالة: تم استخراج صورة مطابقة من أرشيف المستودع."
 
-    # إرسال فوري دون أي شروط مسبقة
     send_whatsapp_alert(alert_msg)
     response.append("\n---\n📲 تم إرسال إشعار فوري لطاقم الصيانة عبر الواتساب.")
 
-    return "\n".join(response), matched_image_path
+    return "\n".join(response), matched_warehouse_image, matched_catalog_page_img
 
 # ==========================================
 # 4. واجهة Gradio الرسمية
@@ -350,7 +359,7 @@ with gr.Blocks(title="منصة الصيانة الهندسية - مسلخ عزي
         with gr.Column(scale=1):
             query_input = gr.Textbox(
                 label="أدخل كود الإنذار / رقم القطعة (4 مقاطع) / وصف العطل",
-                placeholder="أمثلة: انذار E002 ماكينة التغليف | مشكله ماكينه المايسترو | 0990.AD05.007.00 | 89 3608 904 0096",
+                placeholder="أمثلة: انذار E002 ماكينة التغليف | مشكله ماكينه المايسترو | 0990.AD05.007.00 | 89.3500.160.0085",
                 lines=2
             )
             image_input = gr.Image(type="pil", label="أو ارفع صورة القطعة للتعرف البصري عليها ومطابقتها")
@@ -359,16 +368,18 @@ with gr.Blocks(title="منصة الصيانة الهندسية - مسلخ عزي
             
         with gr.Column(scale=1):
             output_box = gr.Markdown(label="تقرير الفحص الفني والحلول")
-            matched_img_output = gr.Image(type="filepath", label="صورة القطعة المطابقة من أرشيف المستودع")
+            with gr.Row():
+                matched_warehouse_img_output = gr.Image(type="filepath", label="صورة القطعة من المستودع الميداني")
+                matched_catalog_page_output = gr.Image(type="filepath", label="مخطط وصفحة الكتالوج الفني")
             
     submit_btn.click(
         fn=maintenance_copilot,
         inputs=[query_input, image_input],
-        outputs=[output_box, matched_img_output]
+        outputs=[output_box, matched_warehouse_img_output, matched_catalog_page_output]
     )
     clear_btn.click(
-        lambda: ("", None, "", None),
-        outputs=[query_input, image_input, output_box, matched_img_output]
+        lambda: ("", None, "", None, None),
+        outputs=[query_input, image_input, output_box, matched_warehouse_img_output, matched_catalog_page_output]
     )
 
 if __name__ == "__main__":
