@@ -10,14 +10,24 @@ import pytz
 from PIL import Image, ImageStat
 import gradio as gr
 from google.cloud import storage
+from google import genai
 
 # ==========================================
-# 0. إعدادات السحابة والمنفذ
+# 0. إعدادات السحابة والمنفذ والذكاء الاصطناعي
 # ==========================================
 PORT = int(os.environ.get("PORT", 8080))
 BUCKET_NAME = "aziza-manuals-storage"
 BASE_DIR = "/tmp/Maintenance_Manuals"
 IMAGE_DIR = os.path.join(BASE_DIR, "Real_Parts_Images")
+
+# إعداد عميل Gemini API
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+ai_client = None
+if GEMINI_API_KEY:
+    try:
+        ai_client = genai.Client(api_key=GEMINI_API_KEY)
+    except Exception as e:
+        print(f"[!] خطأ في تهيئة عميل Gemini API: {e}")
 
 def sync_data_from_gcs():
     os.makedirs(BASE_DIR, exist_ok=True)
@@ -97,7 +107,6 @@ part_images_map = {}
 image_signatures = {}
 
 def get_img_sig(img):
-    """استخراج بصمة بصرية سريعة من 64 بكسل مع تباين الإضاءة"""
     img_gray = img.convert('L').resize((16, 16), Image.Resampling.BILINEAR)
     pixels = list(img_gray.getdata())
     avg = sum(pixels) / len(pixels)
@@ -136,14 +145,66 @@ for p in ["logo.png", "/app/logo.png"]:
             pass
 
 # ==========================================
-# 3. محرك استخراج صور الصفحات والمطابقة والبحث
+# 3. دليل الأعطال الميداني المباشر لماكينات التغليف Automac
+# ==========================================
+AUTOMAC_FAULTS_GUIDE = {
+    "E002": {
+        "title": "حساس تغذية الصواني / توقف في سير الدخول (Infeed Tray Jam / Photocell)",
+        "cause": "عدم وصول الصينية في الوقت المحدد أو وجود اتساخ/انحراف في عاكس خلايا المدخل الضوئية.",
+        "steps": [
+            "1. فحص مجرى دخول الصواني والتأكد من خلوه من أي صواني مائلة أو عوائق ميكانيكية.",
+            "2. تنظيف عدسة وعاكس حساسات الدخول الضوئية (Photocell) بقطعة قماش جافة وخالية من الزيوت.",
+            "3. مراقبة لمبة البيان (LED) على الحساس عند تمرير صينية يدوياً للتحقق من وصول الإشارة إلى الـ PLC.",
+            "4. التحقق من سلامة قواشيط سير الدخول وعدم وجود انزلاق ميكانيكي أثناء الدوران."
+        ]
+    },
+    "E004": {
+        "title": "انقطاع أو نفاد رول التغليف (Film Broken or Empty)",
+        "cause": "نفاد رول النايلون أو انقطاعه أثناء السحب، أو خلل في مفتاح نهاية الشوط لذراع الشد.",
+        "steps": [
+            "1. معاينة رول التغليف والتأكد من عدم نفاد الفيلم بالكامل أو تمزقه.",
+            "2. فحص مسار مرور الفيلم عبر بكرات التوجيه والموازنة والتأكد من خلوها من بقايا نايلون ملتصق.",
+            "3. فحص مفتاح نهاية المشوار (Microswitch) الخاص بذراع الشد والتأكد من تحركه بسلاسة.",
+            "4. إعادة تلقيم النايلون وتصفير الإنذار (Reset) من شاشة التشغيل."
+        ]
+    },
+    "E008": {
+        "title": "فصل القاطع الحراري للمحركات أو دائرة الأمان مفتوحة (Thermal Overload / Safety Circuit)",
+        "cause": "فصل الأوفرلود الحراري لأحد المحركات نتيجة حمل زائد، أو فتح مفتاح طوارئ أو حساس باب الأمان.",
+        "steps": [
+            "1. التأكد من إغلاق أبواب الحماية الشفافة وسلامة إشارات الحساسات المغناطيسية للأبواب.",
+            "2. التأكد من فك تعشيق كافة أزرار التوقف في حالات الطوارئ (Emergency Stop).",
+            "3. فتح لوحة الكهرباء وفحص المرحلات الحرارية (Overloads) وإعادة ضبط المفصول منها بعد التأكد من برودته.",
+            "4. فحص محركات السحب واللحام والتأكد من خلو محاور الدوران من أي انحشار ميكانيكي."
+        ]
+    },
+    "W015": {
+        "title": "انخفاض ضغط الهواء المضغوط أو التزييت (Low Air Pressure / Lubrication Alert)",
+        "cause": "انخفاض ضغط الهواء المغذي للماكينة عن 6 بار، أو اقتراب نفاد الزيت في خزان التزييت الآلي.",
+        "steps": [
+            "1. فحص ساعة قياس ضغط الهواء الرئيسية للتأكد من وصول 6 إلى 6.5 بار مستقر.",
+            "2. تفريغ فلتر فصل المياه (Air Filter / Water Separator) وفحص عمل المنظم الرقمي.",
+            "3. تفقد مستوى الزيت داخل خزان منظومة التزييت المركزي وتعبئته بالزيت المخصص إن لزم.",
+            "4. فحص خراطيم الهواء المؤدية للبساتن والتأكد من عدم وجود تسريب مسموع."
+        ]
+    },
+    "W001": {
+        "title": "تحذير اقتراب نفاد رول النايلون (Film Reel Low Warning)",
+        "cause": "اقتراب قطر رول التغليف من النهاية دون إيقاف الخط.",
+        "steps": [
+            "1. تجهيز رول بديل بالقرب من وحدة التلقيم لتبديله فور توقف الخط وتفادي الهدر الزمني.",
+            "2. تفقد حركة ذراع استشعار قطر الرول والتأكد من نظافة محورها."
+        ]
+    }
+}
+
+# ==========================================
+# 4. محرك استخراج صور الكتالوجات والبحث والمساعد الذكي
 # ==========================================
 def render_pdf_page_to_image(filepath, page_num):
-    """تحويل صفحة الـ PDF المحددة إلى صورة بجودة عالية للعرض المباشر"""
     try:
         doc = fitz.open(filepath)
         page = doc[page_num - 1]
-        # تكبير الصفحة بنسبة 2x لضمان وضوح المخططات والأرقام
         pix = page.get_pixmap(dpi=150)
         out_img_path = f"/tmp/page_{os.path.basename(filepath)}_{page_num}.png"
         pix.save(out_img_path)
@@ -152,8 +213,36 @@ def render_pdf_page_to_image(filepath, page_num):
         print(f"[!] خطأ أثناء تحويل صفحة الـ PDF إلى صورة: {e}")
         return None
 
+def ask_gemini_engineer(user_query, context_text):
+    if not ai_client or not context_text:
+        return ""
+    prompt = f"""
+أنت مهندس صيانة وأتمتة صناعية أول في مسلخ دواجن عزيزا، متخصص في خطوط Meyn، ماكينات التغليف Automac، ومنظومات التبريد والكمبرسورات.
+المطلوب منك: تحليل استعلام الفني استناداً حصراً إلى النص الفني المستخرج من الكتالوج الرسمي المرفق، وتقديم خطوات فحص ميدانية عملية وصارمة.
+
+طلب أو بلاغ الفني:
+"{user_query}"
+
+المحتوى الفني المعتمد من صفحة الكتالوج:
+\"\"\"{context_text[:2500]}\"\"\"
+
+قواعد الإجابة:
+1. اذكر التشخيص الفني المباشر وسبب الخلل باللغة العربية الواضحة.
+2. ضع خطوات فحص وإصلاح متسلسلة (1، 2، 3...).
+3. ركز عملياً على: الحساسات، الهواء المضغوط، المحاذاة الميكانيكية، وتوصيلات الـ PLC.
+4. التزم تماماً بالبيانات الفنية ولا تذكر أي استنتاجات غير مثبتة في النص.
+"""
+    try:
+        response = ai_client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt
+        )
+        return response.text.strip()
+    except Exception as err:
+        print(f"[!] Gemini API Error: {err}")
+        return ""
+
 def match_uploaded_image(uploaded_img):
-    """مقارنة الصورة المرفوعة مع صور المستودع"""
     if uploaded_img is None or not image_signatures:
         return None, None
     try:
@@ -196,11 +285,28 @@ def find_image_for_part(query_text):
 
 def search_engine(query, top_k=3):
     if not manual_pages:
-        return [], None
+        return [], None, None
     clean_q = query.strip()
 
-    # 1. استخراج ومطابقة كود القطعة الصريح (Article nr)
-    # يدعم عائلة 0990 (4 خانات) وعائلة 89 (خانتين أو أكثر) في المقطع الأول
+    # 1. التمييز الصريح بين الإنذارات (E) والتحذيرات (W) لماكينات التغليف
+    alarm_match = re.search(r'\b([EWew])\s*0*(\d+)\b', clean_q)
+    if alarm_match:
+        prefix = alarm_match.group(1).upper()
+        num = int(alarm_match.group(2))
+        std_code = f"{prefix}{num:03d}"
+        
+        pattern = rf'\b{prefix}\s*0*{num}\b'
+        matched = [p for p in manual_pages if re.search(pattern, p["text"], re.IGNORECASE)]
+        if matched:
+            matched_sorted = sorted(
+                matched, 
+                key=lambda x: any(k in x["filename"].lower() for k in ["automac", "297", "298", "wrapping", "fabbri"]), 
+                reverse=True
+            )
+            return matched_sorted[:top_k], std_code, "alarm"
+        return [], std_code, "alarm"
+
+    # 2. مطابقة كود القطعة الصريح الرباعي (Article nr)
     code_match = re.search(r'([A-Za-z0-9]{2,4})\.([A-Za-z0-9]{4})\.([A-Za-z0-9]{3,4})\.([A-Za-z0-9]{2,4})', clean_q)
     if code_match:
         full_code = code_match.group(0)
@@ -211,26 +317,10 @@ def search_engine(query, top_k=3):
             if full_code.lower() in p["text"].lower() or spaced_code.lower() in p["text"].lower()
         ]
         if matched:
-            return matched[:top_k], full_code
-        
-        return [], None
+            return matched[:top_k], full_code, "part"
+        return [], full_code, "part"
 
-    # 2. إنذارات وأعطال ماكينات التغليف Automac (مثل: E002, E004)
-    alarms = re.findall(r'\b[A-Za-z]0*\d+\b|\bAlarm\s*\d+\b|\bError\s*\d+\b', clean_q, re.IGNORECASE)
-    if alarms:
-        for a in alarms:
-            m_num = re.search(r'\d+', a)
-            if m_num:
-                num = int(m_num.group())
-                pattern = rf'\b(E|Alarm|Error)\s*0*{num}\b'
-                matched = [p for p in manual_pages if re.search(pattern, p["text"], re.IGNORECASE)]
-                if matched:
-                    if any(k in clean_q for k in ["تغليف", "automac", "fabbri"]):
-                        matches_sorted = sorted(matched, key=lambda x: any(k in x["filename"].lower() for k in ["automac", "297", "298"]), reverse=True)
-                        return matches_sorted[:top_k], a.upper()
-                    return matched[:top_k], a.upper()
-
-    # 3. توجيه الماكينات بالكلمات المباشرة فقط عند كتابتها صراحة
+    # 3. توجيه المنظومات بالاسم الصريح
     keywords_map = {
         "مايسترو": ["maestro", "eviscerat"],
         "تغليف": ["automac", "wrapping", "297", "298"],
@@ -244,9 +334,9 @@ def search_engine(query, top_k=3):
         if ar_word in clean_q:
             matched = [p for p in manual_pages if any(f in p["filename"].lower() for f in cat_filters)]
             if matched:
-                return matched[:top_k], ar_word
+                return matched[:top_k], ar_word, "keyword"
 
-    return [], None
+    return [], None, None
 
 def maintenance_copilot(query, input_image=None):
     clean_q = query.strip() if query else ""
@@ -268,53 +358,71 @@ def maintenance_copilot(query, input_image=None):
                 timestamp = datetime.now(tz).strftime('%Y-%m-%d %I:%M %p')
                 fail_msg = f"⚠️ *تنبيه فحص ميداني - مسلخ عزيزا*\n⏰ الوقت: {timestamp}\n📸 تم رفع صورة قطعة لم يتعرف عليها النظام تلقائياً، يرجى التحقق اليدوي."
                 send_whatsapp_alert(fail_msg)
-                return "❌ لم يتم العثور على صورة متطابقة بصرياً مع قطع المستودع المفهرسة. يرجى إدخال رقم القطعة كتابةً.\n---\n📲 تم إرسال إشعار لطاقم الصيانة بالمتابعة.", None, None
+                return "❌ لم يتم العثور على صورة متطابقة بصرياً مع قطع المستودع المفهرسة. يرجى إدخال رقم القطعة أو كود الإنذار كتابةً.\n---\n📲 تم إرسال إشعار لطاقم الصيانة بالمتابعة.", None, None
 
     if not clean_q:
-        return "⚠️ يرجى إدخال رقم القطعة (4 مقاطع)، كود الإنذار (مثل E002)، أو رفع صورة القطعة.", None, None
+        return "⚠️ يرجى إدخال كود الإنذار/التنبيه (مثل E002 أو W015)، رقم القطعة (4 مقاطع)، أو رفع صورة القطعة.", None, None
 
-    hits, matched_term = search_engine(clean_q, top_k=3)
-    if not matched_warehouse_image:
+    hits, matched_term, hit_type = search_engine(clean_q, top_k=3)
+    if not matched_warehouse_image and hit_type != "alarm":
         matched_warehouse_image = find_image_for_part(matched_term if matched_term else clean_q)
 
-    if hits:
-        response.append(f"### ✅ تم العثور على مراجع مطابقة في الكتالوجات:")
-        for h in hits:
-            response.append(f"- **الملف:** `{h['filename']}` (صفحة {h['page']})")
-            text = h['text'].replace("\r", "")
-            target = matched_term if matched_term else clean_q
-            idx = text.lower().find(target.lower().split()[0])
-            if idx != -1:
-                start = max(0, idx - 50)
-                end = min(len(text), idx + len(target) + 140)
-                snippet = text[start:end].replace("\n", " ").strip()
-            else:
-                words = text.split()
-                snippet = " ".join(words[:40])
-            response.append(f"  > *\"...{snippet}...\"*\n")
+    # معالجة أكواد الإنذارات والتحذيرات
+    if hit_type == "alarm" and matched_term:
+        prefix = matched_term[0]
+        alarm_header = "🚨 **إنذار توقف حرج (Alarm)**" if prefix == "E" else "⚠️ **تنبيه تحذيري وقائي (Warning)**"
+        response.append(f"### {alarm_header}: `{matched_term}`\n")
         
-        # استخراج صورة الصفحة الأولى المطابقة من الكتالوج تلقائياً
-        matched_catalog_page_img = render_pdf_page_to_image(hits[0]['filepath'], hits[0]['page'])
+        if matched_term in AUTOMAC_FAULTS_GUIDE:
+            info = AUTOMAC_FAULTS_GUIDE[matched_term]
+            response.append(f"📌 **التشخيص:** {info['title']}")
+            response.append(f"🔍 **السبب الميداني:** {info['cause']}\n")
+            response.append("🛠️ **خطوات الفحص والإصلاح الميداني:**")
+            for step in info["steps"]:
+                response.append(f"  {step}")
+
+        if hits:
+            response.append(f"\n📖 **المرجع الفني في الكتالوج:** `{hits[0]['filename']}` (صفحة {hits[0]['page']})")
+            matched_catalog_page_img = render_pdf_page_to_image(hits[0]['filepath'], hits[0]['page'])
+            
+            # استدعاء Gemini لتقديم تحليل إضافي بناءً على صفحة الكتالوج
+            ai_insight = ask_gemini_engineer(clean_q, hits[0]['text'])
+            if ai_insight:
+                response.append("\n---\n### 🤖 التوجيه الهندسي المتقدم (Gemini Co-Pilot):\n" + ai_insight)
+        else:
+            response.append("\nℹ️ تم توثيق الإنذار ولم يُعثر على الصفحة المقابلة في الكتالوجات الحالية.")
+
+    # معالجة أرقام القطع والمنظومات
     else:
-        response.append(f"❌ لم يتم العثور على أي تطابق لطلبك `{clean_q}` داخل صفحات الكتالوجات.")
+        if hits:
+            response.append(f"### ✅ تم العثور على مراجع مطابقة في الكتالوجات:")
+            for h in hits:
+                response.append(f"- **الملف:** `{h['filename']}` (صفحة {h['page']})")
+            
+            matched_catalog_page_img = render_pdf_page_to_image(hits[0]['filepath'], hits[0]['page'])
+            
+            # تحليل محتوى الكتالوج عبر Gemini
+            ai_insight = ask_gemini_engineer(clean_q, hits[0]['text'])
+            if ai_insight:
+                response.append("\n---\n### 🤖 الشرح الهندسي والتوجيه الميداني (Gemini):\n" + ai_insight)
+        else:
+            response.append(f"❌ لم يتم العثور على أي تطابق لطلبك `{clean_q}` داخل صفحات الكتالوجات.")
 
     if matched_warehouse_image:
         response.append("\n🖼️ **تم إرفاق صورة القطعة الحقيقية من أرشيف المستودع الميداني.**")
     if matched_catalog_page_img:
-        response.append("📖 **تم استخراج صورة صفحة الكتالوج والرسم الهندسي أدناه.**")
+        response.append("📖 **تم استخراج صورة صفحة الكتالوج والمخطط الفني أدناه.**")
 
     # إشعار الواتساب التلقائي
     tz = pytz.timezone('Asia/Hebron')
     timestamp = datetime.now(tz).strftime('%Y-%m-%d %I:%M %p')
-
-    alert_msg = f"🔔 *إشعار صيانة ومطابقة - مسلخ عزيزا*\n"
+    alert_msg = f"🔔 *إشعار صيانة وتشخيص - مسلخ عزيزا*\n"
     alert_msg += f"⏰ الوقت: {timestamp}\n"
-    alert_msg += f"🔍 الاستعلام / رقم القطعة: `{clean_q}`\n"
-    
+    alert_msg += f"🔍 الاستعلام: `{clean_q}`\n"
     if hits:
-        alert_msg += f"📖 المرجع الفني: {hits[0]['filename']} (صفحة {hits[0]['page']})\n"
+        alert_msg += f"📖 المرجع: {hits[0]['filename']} (صفحة {hits[0]['page']})\n"
     if matched_warehouse_image:
-        alert_msg += f"🖼️ الحالة: تم استخراج صورة مطابقة من أرشيف المستودع."
+        alert_msg += f"🖼️ الحالة: تم استخراج صورة مطابقة من المستودع."
 
     send_whatsapp_alert(alert_msg)
     response.append("\n---\n📲 تم إرسال إشعار فوري لطاقم الصيانة عبر الواتساب.")
@@ -322,7 +430,7 @@ def maintenance_copilot(query, input_image=None):
     return "\n".join(response), matched_warehouse_image, matched_catalog_page_img
 
 # ==========================================
-# 4. واجهة Gradio الرسمية
+# 5. واجهة Gradio الرسمية
 # ==========================================
 total_manuals = len(glob.glob(os.path.join(BASE_DIR, "**/*.pdf"), recursive=True))
 
@@ -337,7 +445,7 @@ HEADER_HTML = f"""
             </div>
             <div>
                 <h1 style="margin: 0; font-size: 23px; font-weight: 800; color: #ffffff;">شركة دواجن فلسطين - مسلخ عزيزا</h1>
-                <p style="margin: 4px 0 0 0; font-size: 14px; color: #e8f5e9;">نظام الصيانة والتشخيص الهندسي الدقيق (خطوط Meyn • ماكينات التغليف Automac • منظومات التبريد)</p>
+                <p style="margin: 4px 0 0 0; font-size: 14px; color: #e8f5e9;">نظام الصيانة والتشخيص الهندسي الذكي المدعوم بـ AI (خطوط Meyn • ماكينات التغليف Automac • منظومات التبريد)</p>
             </div>
         </div>
         <div style="border-right: 2px solid rgba(255,255,255,0.25); padding-right: 20px;">
@@ -349,28 +457,28 @@ HEADER_HTML = f"""
 </div>
 """
 
-with gr.Blocks(title="منصة الصيانة الهندسية - مسلخ عزيزا") as demo:
+with gr.Blocks(title="منصة الصيانة الهندسية الذكية - مسلخ عزيزا") as demo:
     gr.HTML(HEADER_HTML)
     
     with gr.Row():
-        status_box = gr.Markdown(f"📊 **حالة النظام:** تم تجهيز وفهرسة `{total_manuals}` كتالوج فني ومطابقة صور قطع المستودع الميداني.")
+        status_box = gr.Markdown(f"📊 **حالة النظام:** تم تجهيز وفهرسة `{total_manuals}` كتالوج فني، وربط المساعد الذكي مع أرشيف المستودع الميداني.")
         
     with gr.Row():
         with gr.Column(scale=1):
             query_input = gr.Textbox(
-                label="أدخل كود الإنذار / رقم القطعة (4 مقاطع) / وصف العطل",
-                placeholder="أمثلة: انذار E002 ماكينة التغليف | مشكله ماكينه المايسترو | 0990.AD05.007.00 | 89.3500.160.0085",
+                label="أدخل كود الإنذار (E002) أو التنبيه (W015) / رقم القطعة (4 مقاطع) / وصف العطل",
+                placeholder="أمثلة: E002 | W015 | عطل في ذراع سحب المايسترو | 0990.AD05.007.00 | 89.3500.160.0085",
                 lines=2
             )
             image_input = gr.Image(type="pil", label="أو ارفع صورة القطعة للتعرف البصري عليها ومطابقتها")
-            submit_btn = gr.Button("فحص وتشخيص العطل / مطابقة القطعة 🔍", variant="primary")
+            submit_btn = gr.Button("تشخيص العطل ومطابقة القطعة 🔍", variant="primary")
             clear_btn = gr.Button("مسح الحقول")
             
         with gr.Column(scale=1):
             output_box = gr.Markdown(label="تقرير الفحص الفني والحلول")
             with gr.Row():
                 matched_warehouse_img_output = gr.Image(type="filepath", label="صورة القطعة من المستودع الميداني")
-                matched_catalog_page_output = gr.Image(type="filepath", label="مخطط وصفحة الكتالوج الفني")
+                matched_catalog_page_output = gr.Image(type="filepath", label="مخطط وصفحة الكتالوج الفني / دليل العطل")
             
     submit_btn.click(
         fn=maintenance_copilot,
