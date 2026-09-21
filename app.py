@@ -184,21 +184,30 @@ def find_image_for_part(query_text):
             return v[1]
     return None
 
-def search_engine(query, top_k=5):
+def search_engine(query, top_k=3):
     if not manual_pages:
         return [], None
     clean_q = query.strip()
-    
-    # 1. فحص كود القطعة المكون من 4 مقاطع (نقاط أو مسافات أو شرطات)
-    codes_4 = re.findall(r'([A-Za-z0-9]+)[\.\s\-_/]+([A-Za-z0-9]+)[\.\s\-_/]+([A-Za-z0-9]+)[\.\s\-_/]+([A-Za-z0-9]+)', clean_q)
-    if codes_4:
-        for segs in codes_4:
-            pattern = re.escape(segs[0]) + r'[\.\s\-_]+' + re.escape(segs[1]) + r'[\.\s\-_]+' + re.escape(segs[2]) + r'[\.\s\-_]+' + re.escape(segs[3])
-            matched = [p for p in manual_pages if re.search(pattern, p["text"], re.IGNORECASE)]
-            if matched:
-                return matched[:top_k], ".".join(segs)
 
-    # 2. فحص إنذارات الأعطال (مثل E002 أو E02 أو Alarm 02)
+    # 1. استخراج ومطابقة كود القطعة الرباعي الصريح (Article nr)
+    # النمط يطابق: 0990.BR00.001.36 أو 0000.D409.003.01
+    code_match = re.search(r'([A-Za-z0-9]{4})\.([A-Za-z0-9]{4})\.([A-Za-z0-9]{3,4})\.([A-Za-z0-9]{2,4})', clean_q)
+    if code_match:
+        full_code = code_match.group(0) # الكود كاملاً بنقاطه
+        spaced_code = " ".join(code_match.groups()) # الكود بمسافات لو كان الجدول مفصولاً بمسافات
+        
+        # البحث الصارم: يجب أن يظهر الكود الرباعي كاملاً في نص الصفحة
+        matched = [
+            p for p in manual_pages 
+            if full_code.lower() in p["text"].lower() or spaced_code.lower() in p["text"].lower()
+        ]
+        if matched:
+            return matched[:top_k], full_code
+        
+        # إذا لم يظهر الكود كاملاً، نتوقف فوراً ولا نلجأ لتخمين كلمات عامة
+        return [], None
+
+    # 2. إنذارات وأعطال ماكينات التغليف Automac (مثل: E002, E004)
     alarms = re.findall(r'\b[A-Za-z]0*\d+\b|\bAlarm\s*\d+\b|\bError\s*\d+\b', clean_q, re.IGNORECASE)
     if alarms:
         for a in alarms:
@@ -213,40 +222,23 @@ def search_engine(query, top_k=5):
                         return matches_sorted[:top_k], a.upper()
                     return matched[:top_k], a.upper()
 
-    # 3. توجيه الأعطال والمنظومات المحددة بالاسم العربي
+    # 3. توجيه الماكينات بالكلمات المباشرة فقط عند كتابتها صراحة
     keywords_map = {
-        "مايسترو": (["maestro", "eviscerat"], ["infeed", "entry", "positioning", "shackle", "drawing", "guide"]),
-        "تغليف": (["automac", "wrapping", "297", "298"], ["tray", "film", "alarm", "infeed", "stop"]),
-        "تبريد": (["compressor", "chiller", "refrigeration"], ["temperature", "pressure", "oil", "cooling"]),
-        "كمبرسور": (["compressor", "airpol", "atlas"], ["pressure", "filter", "separator", "alarm"]),
-        "رياشة": (["plucker", "picking"], ["finger", "belt", "motor"]),
-        "سمط": (["scalder", "scalding"], ["temperature", "water", "circulation"])
+        "مايسترو": ["maestro", "eviscerat"],
+        "تغليف": ["automac", "wrapping", "297", "298"],
+        "تبريد": ["compressor", "chiller", "refrigeration"],
+        "كمبرسور": ["compressor", "airpol", "atlas"],
+        "رياشة": ["plucker", "picking"],
+        "سمط": ["scalder", "scalding"],
+        "قوانص": ["gizzard", "peeler"]
     }
-    
-    for ar_word, (cat_filters, terms) in keywords_map.items():
+    for ar_word, cat_filters in keywords_map.items():
         if ar_word in clean_q:
-            pool = [p for p in manual_pages if any(f in p["filename"].lower() for f in cat_filters)]
-            if not pool:
-                pool = manual_pages
-            scored = []
-            for p in pool:
-                score = sum(1 for t in terms if re.search(r'\b' + re.escape(t) + r'\b', p["text"], re.IGNORECASE))
-                if score > 0:
-                    scored.append((score, p))
-            scored.sort(key=lambda x: x[0], reverse=True)
-            if scored:
-                return [x[1] for x in scored[:top_k]], ar_word
-
-    # 4. مطابقة مباشرة لأي رمز أو كلمة
-    eng_tokens = re.findall(r'[A-Za-z0-9]{3,}', clean_q)
-    for tok in eng_tokens:
-        pat = r'\b' + re.escape(tok) + r'\b'
-        matches = [p for p in manual_pages if re.search(pat, p["text"], re.IGNORECASE)]
-        if matches:
-            return matches[:top_k], tok
+            matched = [p for p in manual_pages if any(f in p["filename"].lower() for f in cat_filters)]
+            if matched:
+                return matched[:top_k], ar_word
 
     return [], None
-
 def maintenance_copilot(query, input_image=None):
     clean_q = query.strip() if query else ""
     matched_image_path = None
