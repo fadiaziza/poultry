@@ -92,6 +92,8 @@ def build_manual_index():
 
 build_manual_index()
 
+# فهرسة الصور بصرياً باستخدام توقيع البكسلات المصغرة (Thumbnail Signature)
+# طريقة خفيفة وسريعة ولا تستهلك رام إطلاقاً
 part_images_map = {}
 image_signatures = {}
 
@@ -124,6 +126,7 @@ def build_image_index():
 
 build_image_index()
 
+# قراءة الشعار المحلي المعتمد logo.png
 logo_base64 = ""
 for p in ["logo.png", "/app/logo.png"]:
     if os.path.exists(p):
@@ -135,7 +138,7 @@ for p in ["logo.png", "/app/logo.png"]:
             pass
 
 # ==========================================
-# 3. محرك المطابقة البصرية والبحث الصارم (4 مقاطع كاملة)
+# 3. محرك المطابقة البصرية والبحث الصارم
 # ==========================================
 def match_uploaded_image(uploaded_img):
     """مقارنة الصورة المرفوعة مع صور المستودع"""
@@ -147,14 +150,16 @@ def match_uploaded_image(uploaded_img):
             
         up_sig = get_img_sig(uploaded_img)
         best_part = None
-        min_diff = 256
+        min_diff = 256 # الحد الأقصى للاختلاف (16x16 = 256)
         
         for part_no, (sig, path) in image_signatures.items():
+            # حساب نسبة التطابق بين البصمتين
             diff = sum(c1 != c2 for c1, c2 in zip(up_sig, sig))
             if diff < min_diff:
                 min_diff = diff
                 best_part = (part_no, path)
                 
+        # إذا كانت نسبة التشابه مقبولة (أقل من 65 بت اختلاف من أصل 256)
         if min_diff <= 65:
             return best_part[0], best_part[1]
     except Exception as e:
@@ -179,34 +184,21 @@ def find_image_for_part(query_text):
             return v[1]
     return None
 
-def search_engine(query, top_k=3):
+def search_engine(query, top_k=5):
     if not manual_pages:
         return [], None
     clean_q = query.strip()
     
-    # تنظيف واستخراج مقاطع كود القطعة
-    segs = [s for s in re.split(r'[\.\s\-_/]+', clean_q) if s]
-    
-    # 1. المطابقة الحصرية للأربع مجموعات كاملة معاً (مثل: 0069.0008.014.00)
-    if len(segs) == 4:
-        s0, s1, s2, s3 = segs[0], segs[1], segs[2], segs[3]
-        
-        # أ) مطابقة المجموعات الأربع معاً بأي فاصل (نقاط، مسافات، شرطات)
-        pat_4 = rf'\b{re.escape(s0)}[\.\s\-_/]+{re.escape(s1)}[\.\s\-_/]+{re.escape(s2)}[\.\s\-_/]+{re.escape(s3)}\b'
-        matched = [p for p in manual_pages if re.search(pat_4, p["text"], re.IGNORECASE)]
-        if matched:
-            return matched[:top_k], ".".join(segs)
+    # 1. فحص كود القطعة المكون من 4 مقاطع (نقاط أو مسافات أو شرطات)
+    codes_4 = re.findall(r'([A-Za-z0-9]+)[\.\s\-_/]+([A-Za-z0-9]+)[\.\s\-_/]+([A-Za-z0-9]+)[\.\s\-_/]+([A-Za-z0-9]+)', clean_q)
+    if codes_4:
+        for segs in codes_4:
+            pattern = re.escape(segs[0]) + r'[\.\s\-_]+' + re.escape(segs[1]) + r'[\.\s\-_]+' + re.escape(segs[2]) + r'[\.\s\-_]+' + re.escape(segs[3])
+            matched = [p for p in manual_pages if re.search(pattern, p["text"], re.IGNORECASE)]
+            if matched:
+                return matched[:top_k], ".".join(segs)
 
-        # ب) مطابقة المجموعات الأربع متصلة بالكامل بدون أي فواصل (Raw Digits)
-        raw_4 = f"{s0}{s1}{s2}{s3}".lower()
-        matched_raw = [p for p in manual_pages if raw_4 in re.sub(r'[^a-zA-Z0-9]', '', p["text"]).lower()]
-        if matched_raw:
-            return matched_raw[:top_k], ".".join(segs)
-
-        # التوقف الفوري إذا لم تتطابق المجموعات الأربع معاً لمنع الهلوسة والماكينات العشوائية
-        return [], None
-
-    # 2. فحص إنذارات الأعطال (مثل E002 أو Alarm 02)
+    # 2. فحص إنذارات الأعطال (مثل E002 أو E02 أو Alarm 02)
     alarms = re.findall(r'\b[A-Za-z]0*\d+\b|\bAlarm\s*\d+\b|\bError\s*\d+\b', clean_q, re.IGNORECASE)
     if alarms:
         for a in alarms:
@@ -221,7 +213,7 @@ def search_engine(query, top_k=3):
                         return matches_sorted[:top_k], a.upper()
                     return matched[:top_k], a.upper()
 
-    # 3. توجيه الأعطال والمنظومات المحددة بالاسم العربي الصريح
+    # 3. توجيه الأعطال والمنظومات المحددة بالاسم العربي
     keywords_map = {
         "مايسترو": (["maestro", "eviscerat"], ["infeed", "entry", "positioning", "shackle", "drawing", "guide"]),
         "تغليف": (["automac", "wrapping", "297", "298"], ["tray", "film", "alarm", "infeed", "stop"]),
@@ -245,6 +237,14 @@ def search_engine(query, top_k=3):
             if scored:
                 return [x[1] for x in scored[:top_k]], ar_word
 
+    # 4. مطابقة مباشرة لأي رمز أو كلمة
+    eng_tokens = re.findall(r'[A-Za-z0-9]{3,}', clean_q)
+    for tok in eng_tokens:
+        pat = r'\b' + re.escape(tok) + r'\b'
+        matches = [p for p in manual_pages if re.search(pat, p["text"], re.IGNORECASE)]
+        if matches:
+            return matches[:top_k], tok
+
     return [], None
 
 def maintenance_copilot(query, input_image=None):
@@ -262,6 +262,7 @@ def maintenance_copilot(query, input_image=None):
                 clean_q = matched_part_no
         else:
             if not clean_q:
+                # إشعار الواتساب عند تعذر المطابقة البصرية
                 tz = pytz.timezone('Asia/Hebron')
                 timestamp = datetime.now(tz).strftime('%Y-%m-%d %I:%M %p')
                 fail_msg = f"⚠️ *تنبيه فحص ميداني - مسلخ عزيزا*\n⏰ الوقت: {timestamp}\n📸 تم رفع صورة قطعة لم يتعرف عليها النظام تلقائياً، يرجى التحقق اليدوي."
@@ -271,7 +272,10 @@ def maintenance_copilot(query, input_image=None):
     if not clean_q:
         return "⚠️ يرجى إدخال رقم القطعة (4 مقاطع)، كود الإنذار (مثل E002)، أو رفع صورة القطعة.", None
 
-    hits, matched_term = search_engine(clean_q, top_k=3)
+    if not clean_q:
+        return "⚠️ يرجى إدخال رقم القطعة (4 مقاطع)، كود الإنذار (مثل E002)، أو رفع صورة القطعة.", None
+
+    hits, matched_term = search_engine(clean_q, top_k=4)
     if not matched_image_path:
         matched_image_path = find_image_for_part(matched_term if matched_term else clean_q)
 
@@ -296,10 +300,11 @@ def maintenance_copilot(query, input_image=None):
     if matched_image_path:
         response.append("\n🖼️ **تم إرفاق صورة القطعة الحقيقية من أرشيف المستودع الميداني أدناه.**")
 
-    # إشعار الواتساب التلقائي
+   # إشعار الواتساب التلقائي (يعمل مع الصور، أرقام القطع، وبلاغات الأعطال)
     tz = pytz.timezone('Asia/Hebron')
     timestamp = datetime.now(tz).strftime('%Y-%m-%d %I:%M %p')
 
+    # تجهيز رسالة التنبيه الشاملة
     alert_msg = f"🔔 *إشعار صيانة ومطابقة - مسلخ عزيزا*\n"
     alert_msg += f"⏰ الوقت: {timestamp}\n"
     alert_msg += f"🔍 الاستعلام / رقم القطعة: `{clean_q}`\n"
@@ -309,6 +314,7 @@ def maintenance_copilot(query, input_image=None):
     if matched_image_path:
         alert_msg += f"🖼️ الحالة: تم استخراج صورة مطابقة من أرشيف المستودع."
 
+    # إرسال فوري دون أي شروط مسبقة
     send_whatsapp_alert(alert_msg)
     response.append("\n---\n📲 تم إرسال إشعار فوري لطاقم الصيانة عبر الواتساب.")
 
@@ -376,5 +382,6 @@ with gr.Blocks(title="منصة الصيانة الهندسية - مسلخ عزي
 if __name__ == "__main__":
     demo.launch(
         server_name="0.0.0.0",
-        server_port=PORT
+        server_port=PORT,
+        allowed_paths=["/tmp"]
     )
