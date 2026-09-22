@@ -270,6 +270,109 @@ def search_engine(query, top_k=3):
         return [], full_code, "part"
 
     # =========================================================================
+    # 3. محرك استخراج جداول أعطال Meyn وباقي الماكينات (Troubleshooting)
+    # =========================================================================
+    all_machines_map = {
+        "مايسترو": {"name": "ماكينة التفريغ مايسترو (Maestro)", "keys": ["maestro", "eviscerat", "0600"]},
+        "تفريغ": {"name": "ماكينة التفريغ مايسترو (Maestro)", "keys": ["maestro", "eviscerat", "0600", "unloader", "2360", "3860"]},
+        "فتح": {"name": "ماكينة الفتح والمقص (Opening Scissors)", "keys": ["opening", "scissors", "0450"]},
+        "مقص": {"name": "ماكينة الفتح والمقص (Opening Scissors)", "keys": ["opening", "scissors", "0450"]},
+        "فنت": {"name": "ماكينة قص المخرج الفنت (Vent Cutter)", "keys": ["vent", "cutter", "0100"]},
+        "رياشة": {"name": "ماكينة نزع الريش (Plucker)", "keys": ["plucker", "picking", "jm64", "2470", "0770"]},
+        "سمط": {"name": "حوض السمط (Scalder)", "keys": ["scalder", "scalding", "0560", "0990"]},
+        "قوانص": {"name": "ماكينة تنظيف القوانص (Gizzard Processor)", "keys": ["gizzard", "peeler", "cd-6000", "1860"]},
+        "تعليق": {"name": "سير الشواكل والتعليق (Overhead Conveyor)", "keys": ["shackle", "overhead", "0230"]},
+        "شواكل": {"name": "سير الشواكل والتعليق (Overhead Conveyor)", "keys": ["shackle", "overhead", "0230"]},
+        "أرجل": {"name": "ماكينة قص الأرجل (Hock / Leg Cutter)", "keys": ["leg cutter", "hock", "3000"]},
+        "رؤوس": {"name": "ماكينة سحب الرؤوس (Head Puller)", "keys": ["head puller", "2920"]},
+        "شفاط": {"name": "مضخات الفاكيوم وتفريغ الرئة (Vacuum Pump)", "keys": ["vacuum", "lung", "robuschi", "2170", "0190"]},
+        "تغليف": {"name": "ماكينة التغليف أوتوماك (Automac)", "keys": ["automac", "wrapping", "297", "298", "a55"]},
+        "تبريد": {"name": "كمبرسورات ومنظومات التبريد", "keys": ["compressor", "chiller", "refrigeration", "2410", "airpol", "atlas"]}
+    }
+
+    # التحقق من نوع السؤال: هل يبحث عن مشاكل / أعطال / صيانة؟
+    is_trouble_intent = any(k in clean_q_lower for k in [
+        "عطل", "مشكل", "جدول", "فحص", "صيانة", "توقف", "trouble", "fault", "failure",
+        "meyn", "ماكينات", "حل", "سبب"
+    ])
+
+    # استخراج الماكينة المحددة من النص
+    target_keys = []
+    display_label = "Meyn Machine"
+    for ar_term, m_data in all_machines_map.items():
+        if ar_term in clean_q_lower:
+            target_keys = m_data["keys"]
+            display_label = m_data["name"]
+            break
+
+    # فحص الأرقام المباشرة (مثل 0450 أو 0100 أو 0600)
+    num_match = re.search(r'\b\d{4}\b', clean_q)
+    if num_match:
+        target_keys.append(num_match.group(0))
+        if display_label == "Meyn Machine":
+            display_label = f"ماكينة موديل {num_match.group(0)}"
+
+    # إذا كان السؤال عن عطل أو جدول مشاكل:
+    if is_trouble_intent or target_keys:
+        candidates = []
+        for p in manual_pages:
+            t = p["text"].lower()
+
+            # 1. استبعاد صفحات البداية (الفهرس والمقدمة في أول 7 صفحات)
+            if p["page"] <= 7:
+                continue
+
+            # 2. استبعاد صفحات الفهارس التي تحتوي على نقاط تسلسل
+            if "....." in t or ".... " in t:
+                continue
+
+            # 3. التأكد من تطابق الماكينة إن حُددت
+            if target_keys and not any(k in p["filename"].lower() for k in target_keys):
+                continue
+
+            # 4. علامات تدل بقوة على جدول الأعطال
+            score = 0
+            if "trouble shooting" in t or "troubleshooting" in t:
+                score += 5
+            if "failure" in t and "cause" in t:
+                score += 4
+            if "solution" in t or "remedy" in t:
+                score += 3
+            if "machine doesn't" in t or "doesn't start" in t or "doesn't cut" in t:
+                score += 4
+
+            if score >= 6:
+                candidates.append((score, p))
+
+        if candidates:
+            # ترتيب الصفحات حسب الأعلى تطابقاً لجداول الأعطال
+            candidates.sort(key=lambda x: x[0], reverse=True)
+            best_pages = [item[1] for item in candidates[:top_k]]
+            return best_pages, display_label, "trouble_table"
+
+    # في حال السؤال عام عن ماكينة معينة بدون ذكر عطل
+    if target_keys:
+        fallback = [p for p in manual_pages if any(k in p["filename"].lower() for k in target_keys) and p["page"] > 5]
+        if fallback:
+            return fallback[:top_k], display_label, "keyword"
+
+    return [], None, None
+
+    # 2. مطابقة كود القطعة الصريح الرباعي (Article nr)
+    code_match = re.search(r'([A-Za-z0-9]{2,4})\.([A-Za-z0-9]{4})\.([A-Za-z0-9]{3,4})\.([A-Za-z0-9]{2,4})', clean_q)
+    if code_match:
+        full_code = code_match.group(0)
+        spaced_code = " ".join(code_match.groups())
+        
+        matched = [
+            p for p in manual_pages 
+            if full_code.lower() in p["text"].lower() or spaced_code.lower() in p["text"].lower()
+        ]
+        if matched:
+            return matched[:top_k], full_code, "part"
+        return [], full_code, "part"
+
+    # =========================================================================
     # 3. خريطة شاملة لأسماء ماكينات المجزر باللغة العربية
     # =========================================================================
     all_machines_map = {
