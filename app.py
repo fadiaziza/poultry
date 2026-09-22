@@ -159,64 +159,26 @@ def render_pdf_page_to_image(filepath, page_num):
     except Exception as e:
         print(f"[!] Error rendering PDF page to image: {e}")
         return None
-        
-        def render_machine_cover_image(filepath):
-    """استخراج صورة غلاف الكتالوج (الصفحة الأولى) لعرض صورة الماكينة الكاملة"""
-    try:
-        doc = fitz.open(filepath)
-        page = doc[0]  # الصفحة الأولى دائماً تحتوي صورة الماكينة
-        pix = page.get_pixmap(dpi=150)
-        out_img_path = f"/tmp/cover_{os.path.basename(filepath)}.png"
-        pix.save(out_img_path)
-        return out_img_path
-    except Exception as e:
-        print(f"[!] Error rendering machine cover image: {e}")
-        return None
 
 def ask_gemini_engineer(user_query, context_text):
-    """صياغة الفحص والتحليل الهندسي بالبرومبت الموسع المعتمد لمنصة مسلخ عزيزا"""
+    """صياغة خطوات الفحص الهندسي باللغة الإنجليزية التقنية الصارمة من الكتالوج"""
     if not ai_client or not context_text:
         return ""
-
     prompt = f"""
-ROLE & CONTEXT:
-You are the Senior Chief Industrial Automation & Maintenance Systems Engineer for Palestine Poultry Company ("Aziza Slaughterhouse"). You possess deep mastery over:
-1. Meyn poultry processing lines (Evisceration Maestro lines, Vent Cutters, Opening Scissors, Pluckers, Scalders, Shackle Conveyors, Gizzard Processors, Vacuum Lung Pumps).
-2. Gruppo Fabbri Automac stretch wrapping machinery (Automac 55, 75, 297, 298) and its PLC error/warning registers.
-3. Industrial refrigeration screw/reciprocating compressors (Airpol, Atlas Copco, Bitzer) and cold storage controls.
+You are a Lead Automation & Industrial Maintenance Engineer at a poultry processing plant, highly specialized in Meyn evisceration and slaughtering lines, Automac stretch wrapping machines (Fabbri Group), and plant refrigeration.
+Based STRICTLY on the technical manual excerpt below, provide a professional, structured troubleshooting procedure in English for the field maintenance technician.
 
-MISSION:
-A field maintenance technician has reported a problem or submitted an inquiry. Your task is to analyze the retrieved technical manual pages and generate an exhaustive, highly structured, professional engineering troubleshooting report in Technical English.
-
-TECHNICIAN QUERY / REPORTED ISSUE:
+Technician Query / Reported Problem:
 "{user_query}"
 
-EXTRACTED TECHNICAL MANUAL DATA:
-\"\"\"{context_text[:4500]}\"\"\"
+Technical Manual Page Content:
+\"\"\"{context_text[:3500]}\"\"\"
 
-STRICT ENGINEERING GUIDELINES & CONSTRAINTS:
-1. ZERO HALLUCINATION POLICY: Base your technical analysis, adjustments, sensor codes, pressure ratings, and procedures ONLY on the provided manual text. Do NOT fabricate part numbers, tolerances, or solutions not supported by the excerpt.
-2. COMPREHENSIVE TROUBLESHOOTING TABLE: If the manual text contains a "Trouble shooting table" or fault register, extract and format EVERY failure, root cause, and remedy into a clear, complete Markdown table without omitting or combining items.
-3. STRUCTURED ACTION CHECKLIST: Provide a step-by-step diagnostic checklist prioritized logically for a field technician:
-   - Step 1: Immediate Safety & Electrical/PLC Verification (Emergency stop switches, door interlocks, photocell LEDs, thermal overload breakers).
-   - Step 2: Pneumatics & Hydraulics (Air pressure gauge reading >= 6 bar, lubricator oil level, pneumatic cylinders, air line leakage).
-   - Step 3: Mechanical Alignment & Tolerances (Cam follower wheels, knife/blade sharpness, conveyor guide heights, carrier pins).
-4. TERMINOLOGY & TONE: Maintain a direct, commanding, authoritative technical tone. Output strictly in clear, professional English. Never include introductory conversational filler (e.g., "Hello", "Sure, here is your report") or generic closing remarks.
-
-OUTPUT FORMAT:
-## 🛠️ [Machine / System Name] - Technical Troubleshooting Report
-### 📌 Detected Symptom / Alarm Context
-(Brief technical summary of the condition)
-
-### 📋 Technical Manual Failure Analysis Table
-| Failure / Defect | Possible Root Cause | Technical Solution / Remedial Action |
-| :--- | :--- | :--- |
-(Populate completely from the manual)
-
-### 🔧 Field Maintenance Action Checklist
-1. ...
-2. ...
-3. ...
+Response Format Requirements:
+- Header: Machine Name / Section and Detected Failure.
+- Root Cause: Concise sentence explaining the root cause based directly on the manual table.
+- Corrective Actions / Checklist: Numbered, direct, practical technical steps (e.g. 1. Check photocell sensor alignment, 2. Adjust mechanical height/cam, 3. Inspect pneumatic pressure, 4. Replace blunt knives/blades, 5. Reset emergency stop / overload).
+- Strictly in English. No introductory greetings or conversational fluff. Keep it direct and professional.
 """
     try:
         response = ai_client.models.generate_content(
@@ -424,10 +386,10 @@ def search_engine(query, top_k=3):
         "قوانص": {"name": "ماكينة تنظيف القوانص (Gizzard Processor)", "keys": ["gizzard", "peeler", "cd-6000", "1860"]},
         "تعليق": {"name": "سير الشواكل والتعليق العلوي (Overhead Conveyor)", "keys": ["shackle", "overhead", "0230", "conveyor"]},
         "علاقات": {"name": "سير الشواكل والتعليق العلوي (Overhead Conveyor)", "keys": ["shackle", "overhead", "0230", "conveyor"]},
-        "أرجل": {"name": "ماكينة قص الارجل (Hock / Leg Cutter)", "keys": ["leg cutter", "hock", "3000"]},
+        "أرجل": {"name": "ماكينة قص الأرجل (Hock / Leg Cutter)", "keys": ["leg cutter", "hock", "3000"]},
         "رؤوس": {"name": "ماكينة سحب الرؤوس (Head Puller)", "keys": ["head puller", "2920"]},
         "شفاط": {"name": "مضخات الفاكيوم وتفريغ الرئة (Vacuum Pump / Lung)", "keys": ["vacuum", "lung", "robuschi", "2170", "0190"]},
-        "تغليف": {"name": "ماكينة التغليف  (Automac Wrapping)", "keys": ["automac", "wrapping", "297", "298", "a55"]},
+        "تغليف": {"name": "ماكينة التغليف أوتوماك (Automac Wrapping)", "keys": ["automac", "wrapping", "297", "298", "a55"]},
         "تبريد": {"name": "كمبرسورات ومنظومات التبريد (Chillers & Compressors)", "keys": ["compressor", "chiller", "refrigeration", "2410", "airpol", "atlas"]}
     }
 
@@ -525,19 +487,14 @@ def maintenance_copilot(query, input_image=None):
     # ==========================================
     # 2. جداول استكشاف الأعطال (Trouble Shooting Tables)
     # ==========================================
-   elif hit_type == "trouble_table":
+    elif hit_type == "trouble_table":
         response.append(f"## 🛠️ {matched_term} - Official Trouble Shooting Guide\n")
         if hits:
-            # 1. استخراج صورة الماكينة من غلاف الكتالوج للمربع الجانبي
-            matched_warehouse_image = render_machine_cover_image(hits[0]['filepath'])
-            
-            # 2. توليد تفريغ جدول الأعطال الشامل وخطوات الفحص في الأعلى عبر Gemini
             ai_insight = ask_gemini_engineer(clean_q, hits[0]['text'])
             if ai_insight:
                 response.append(ai_insight)
                 response.append("\n" + "="*55 + "\n")
             
-            # 3. توثيق المرجع واستخراج صفحة جدول الأعطال
             response.append(f"📖 **Technical Manual Reference:** `{hits[0]['filename']}` (Page {hits[0]['page']})")
             matched_catalog_page_img = render_pdf_page_to_image(hits[0]['filepath'], hits[0]['page'])
         else:
