@@ -144,9 +144,10 @@ for p in ["logo.png", "/app/logo.png"]:
             pass
 
 # ==========================================
-# 3. دوال استخراج ومعالجة الصور
+# 3. دوال استخراج ومعالجة الصور ودمج الصفحات
 # ==========================================
 def render_pdf_page_to_image(filepath, page_num):
+    """تحويل صفحة PDF واحدة إلى صورة"""
     try:
         doc = fitz.open(filepath)
         page = doc[page_num - 1]
@@ -158,7 +159,41 @@ def render_pdf_page_to_image(filepath, page_num):
         print(f"[!] Error rendering PDF page to image: {e}")
         return None
 
+def render_troubleshooting_pages_stitched(filepath, page_list):
+    """دمج صفحات جدول الأعطال المتتالية في صورة عمودية واحدة عالية الدقة"""
+    if not page_list:
+        return None
+    if len(page_list) == 1:
+        return render_pdf_page_to_image(filepath, page_list[0])
+    
+    try:
+        doc = fitz.open(filepath)
+        pil_images = []
+        for p_num in page_list[:3]:  # دمج ما يصل إلى 3 صفحات كحد أقصى لجدول الأعطال
+            page = doc[p_num - 1]
+            pix = page.get_pixmap(dpi=140)
+            img_data = pix.tobytes("png")
+            pil_images.append(Image.open(io.BytesIO(img_data)))
+        
+        # حساب أبعاد الصورة المدمجة
+        max_width = max(im.width for im in pil_images)
+        total_height = sum(im.height for im in pil_images)
+        
+        combined_img = Image.new("RGB", (max_width, total_height), (255, 255, 255))
+        y_offset = 0
+        for im in pil_images:
+            combined_img.paste(im, (0, y_offset))
+            y_offset += im.height
+            
+        out_combined_path = f"/tmp/trouble_stitched_{os.path.basename(filepath)}.png"
+        combined_img.save(out_combined_path)
+        return out_combined_path
+    except Exception as e:
+        print(f"[!] Error stitching troubleshooting pages: {e}")
+        return render_pdf_page_to_image(filepath, page_list[0])
+
 def render_machine_cover_image(filepath):
+    """استخراج صورة غلاف الكتالوج لعرض صورة الماكينة الحقيقية"""
     try:
         doc = fitz.open(filepath)
         page = doc[0]
@@ -212,53 +247,34 @@ def find_image_for_part(query_text):
     return None
 
 # ==========================================
-# 4. محرك استدعاء الذكاء الاصطناعي (Gemini)
+# 4. محرك Gemini لاستخراج جميع الأعطال بالكامل
 # ==========================================
 def ask_gemini_engineer(user_query, context_text):
     if not ai_client or not context_text:
         return ""
 
     prompt = f"""
-ROLE & CONTEXT:
-You are the Senior Chief Industrial Automation & Maintenance Systems Engineer for Palestine Poultry Company ("Aziza Slaughterhouse"). You possess deep mastery over:
-1. Meyn poultry processing lines (Evisceration Maestro lines, Vent Cutters, Opening Scissors, Pluckers, Scalders, Shackle Conveyors, Gizzard Processors, Vacuum Lung Pumps).
-2. Gruppo Fabbri Automac stretch wrapping machinery (Automac 55, 75, 297, 298) and its PLC error/warning registers.
-3. Industrial refrigeration screw/reciprocating compressors (Airpol, Atlas Copco, Bitzer) and cold storage controls.
+ROLE & RESPONSIBILITY:
+You are the Lead Automation & Industrial Maintenance Systems Engineer at Palestine Poultry Company ("Aziza Slaughterhouse").
+A maintenance supervisor/technician requested the complete troubleshooting records from the official equipment manual.
 
-MISSION:
-A field maintenance technician has reported a problem or submitted an inquiry. Your task is to analyze the retrieved technical manual pages and generate an exhaustive, highly structured, professional engineering troubleshooting report in Technical English.
-
-TECHNICIAN QUERY / REPORTED ISSUE:
+USER QUERY:
 "{user_query}"
 
-EXTRACTED TECHNICAL MANUAL DATA:
-\"\"\"{context_text[:4500]}\"\"\"
+FULL TROUBLESHOOTING SECTION TEXT:
+\"\"\"{context_text[:12000]}\"\"\"
 
-STRICT ENGINEERING GUIDELINES & CONSTRAINTS:
-1. ZERO HALLUCINATION POLICY: Base your technical analysis, adjustments, sensor codes, pressure ratings, and procedures ONLY on the provided manual text. Do NOT fabricate part numbers, tolerances, or solutions not supported by the excerpt.
-2. COMPREHENSIVE TROUBLESHOOTING TABLE: Extract and format EVERY failure, root cause, and remedy into a clear, complete Markdown table without omitting or combining items:
-| Failure / Defect | Possible Root Cause | Technical Solution / Remedial Action |
-| :--- | :--- | :--- |
-3. STRUCTURED ACTION CHECKLIST: Provide a step-by-step diagnostic checklist prioritized logically for a field technician:
-   - Step 1: Immediate Safety & Electrical/PLC Verification (Emergency stop switches, door interlocks, photocell LEDs, thermal overload breakers).
-   - Step 2: Pneumatics & Hydraulics (Air pressure gauge reading >= 6 bar, lubricator oil level, pneumatic cylinders, air line leakage).
-   - Step 3: Mechanical Alignment & Tolerances (Cam follower wheels, knife/blade sharpness, conveyor guide heights, carrier pins).
-4. TERMINOLOGY & TONE: Maintain a direct, authoritative technical tone. Output strictly in clear, professional English. Never include introductory conversational filler or generic closing remarks.
-
-OUTPUT FORMAT:
-## 🛠️ Machine / System Technical Troubleshooting Report
-### 📌 Summary of Reported Condition
-(Brief technical summary)
-
-### 📋 Complete Failure Analysis Table
-| Failure / Defect | Possible Root Cause | Technical Solution / Remedial Action |
-| :--- | :--- | :--- |
-(Populate completely from the manual)
-
-### 🔧 Field Maintenance Action Checklist
-1. ...
-2. ...
-3. ...
+MANDATORY INSTRUCTIONS:
+1. EXHAUSTIVE EXTRACTION: Do NOT summarize, omit, or truncate ANY failure. You MUST extract EVERY SINGLE ROW and condition listed across all the manual pages provided.
+2. OUTPUT FORMAT:
+   First, output a complete, cleanly structured Markdown Table containing all problems:
+   | # | Failure / Symptom | Possible Cause | Corrective Action / Solution |
+   | :-: | :--- | :--- | :--- |
+   Populate every row accurately with technical precision.
+3. ACTION CHECKLIST:
+   After the table, generate a prioritized "Quick Field Checklist" in technical English highlighting critical inspection points (Sensors, Pneumatics, Mechanical drives, Safety circuits).
+4. TONE & LANGUAGE:
+   Strictly Technical English. Direct, professional, and completely free of conversational filler (do NOT say "Here is the table" or "Sure").
 """
     try:
         response = ai_client.models.generate_content(
@@ -271,14 +287,15 @@ OUTPUT FORMAT:
         return ""
 
 # ==========================================
-# 5. محرك البحث الذكي
+# 5. محرك البحث الذكي (متعدد الصفحات للأعطال)
 # ==========================================
-def search_engine(query, top_k=3):
+def search_engine(query, top_k=5):
     if not manual_pages:
         return [], None, None
     clean_q = query.strip()
     clean_q_lower = clean_q.lower()
 
+    # 1. إنذارات وتحذيرات أوتوماك (E / W)
     alarm_match = re.search(r'\b([EWew])\s*0*(\d+)\b', clean_q)
     if alarm_match:
         prefix = alarm_match.group(1).upper()
@@ -296,6 +313,7 @@ def search_engine(query, top_k=3):
             return matched_sorted[:top_k], std_code, "alarm"
         return [], std_code, "alarm"
 
+    # 2. مطابقة رقم القطعة
     code_match = re.search(r'([A-Za-z0-9]{2,4})\.([A-Za-z0-9]{4})\.([A-Za-z0-9]{3,4})\.([A-Za-z0-9]{2,4})', clean_q)
     if code_match:
         full_code = code_match.group(0)
@@ -309,28 +327,29 @@ def search_engine(query, top_k=3):
             return matched[:top_k], full_code, "part"
         return [], full_code, "part"
 
+    # 3. خريطة ماكينات المجزر
     all_machines_map = {
         "مايسترو": {"name": "ماكينة التفريغ مايسترو (Maestro)", "keys": ["maestro", "eviscerat", "0600"]},
-        "مايسترو": {"name": "ماكينة التفريغ مايسترو (Maestro)", "keys": ["maestro", "eviscerat", "0600", "unloader", "2360", "3860"]},
-        "فتح": {"name": "ماكينة فتح الدجاج (Opening Scissors)", "keys": ["opening", "scissors", "0450"]},
-        "مقص": {"name": "ماكينة فتح الدجاج (Opening Scissors)", "keys": ["opening", "scissors", "0450"]},
-        "قتح نهائي": {"name": "ماكينة فتح نهائي (Vent Cutter)", "keys": ["vent", "cutter", "0100"]},
-        "معاطة": {"name": "ماكينة نزع الريش (Plucker)", "keys": ["plucker", "picking", "jm64", "2470", "0770"]},
-        "سكالدر": {"name": "سكالدر (Scalder)", "keys": ["scalder", "scalding", "0560", "0990"]},
+        "تفريغ": {"name": "ماكينة التفريغ مايسترو (Maestro)", "keys": ["maestro", "eviscerat", "0600", "unloader", "2360", "3860"]},
+        "فتح": {"name": "ماكينة الفتح والمقص (Opening Scissors)", "keys": ["opening", "scissors", "0450"]},
+        "مقص": {"name": "ماكينة الفتح والمقص (Opening Scissors)", "keys": ["opening", "scissors", "0450"]},
+        "فنت": {"name": "ماكينة قص المخرج الفنت (Vent Cutter)", "keys": ["vent", "cutter", "0100"]},
+        "رياشة": {"name": "ماكينة نزع الريش (Plucker)", "keys": ["plucker", "picking", "jm64", "2470", "0770"]},
+        "سمط": {"name": "حوض السمط (Scalder)", "keys": ["scalder", "scalding", "0560", "0990"]},
         "سكالدر": {"name": "حوض السمط (Scalder)", "keys": ["scalder", "scalding", "0560", "0990"]},
         "قوانص": {"name": "ماكينة تنظيف القوانص (Gizzard Processor)", "keys": ["gizzard", "peeler", "cd-6000", "1860"]},
-        "تعليق": {"name": "علاقات (Overhead Conveyor)", "keys": ["shackle", "overhead", "0230"]},
-        "شواكل": {"name": "علاقات (Overhead Conveyor)", "keys": ["shackle", "overhead", "0230"]},
-        "أرجل": {"name": "ماكينة قص الارجل (Hock / Leg Cutter)", "keys": ["leg cutter", "hock", "3000"]},
+        "تعليق": {"name": "سير الشواكل والتعليق (Overhead Conveyor)", "keys": ["shackle", "overhead", "0230"]},
+        "شواكل": {"name": "سير الشواكل والتعليق (Overhead Conveyor)", "keys": ["shackle", "overhead", "0230"]},
+        "أرجل": {"name": "ماكينة قص الأرجل (Hock / Leg Cutter)", "keys": ["leg cutter", "hock", "3000"]},
         "رؤوس": {"name": "ماكينة سحب الرؤوس (Head Puller)", "keys": ["head puller", "2920"]},
-        "فاكيوم": {"name": "ماكينة الفاكيوم وتفريغ الرئة (Vacuum Pump)", "keys": ["vacuum", "lung", "robuschi", "2170", "0190"]},
-        "تغليف": {"name": "ماكينة التغليف  (Automac)", "keys": ["automac", "wrapping", "297", "298", "a55"]},
+        "شفاط": {"name": "مضخات الفاكيوم وتفريغ الرئة (Vacuum Pump)", "keys": ["vacuum", "lung", "robuschi", "2170", "0190"]},
+        "تغليف": {"name": "ماكينة التغليف أوتوماك (Automac)", "keys": ["automac", "wrapping", "297", "298", "a55"]},
         "تبريد": {"name": "كمبرسورات ومنظومات التبريد", "keys": ["compressor", "chiller", "refrigeration", "2410", "airpol", "atlas"]}
     }
 
     is_trouble_intent = any(k in clean_q_lower for k in [
         "عطل", "مشكل", "جدول", "فحص", "صيانة", "توقف", "trouble", "fault", "failure",
-        "meyn", "ماكينات", "حل", "سبب"
+        "meyn", "ماكينات", "حل", "سبب", "سحب"
     ])
 
     target_keys = []
@@ -347,15 +366,13 @@ def search_engine(query, top_k=3):
         if display_label == "Meyn Machine":
             display_label = f"ماكينة موديل {num_match.group(0)}"
 
+    # عند طلب جدول الأعطال أو الاستعلام عن ماكينة
     if is_trouble_intent or target_keys:
         candidates = []
         for p in manual_pages:
             t = p["text"].lower()
 
-            if p["page"] <= 7:
-                continue
-
-            if "....." in t or ".... " in t:
+            if p["page"] <= 7 or "....." in t or ".... " in t:
                 continue
 
             if target_keys and not any(k in p["filename"].lower() for k in target_keys):
@@ -371,13 +388,23 @@ def search_engine(query, top_k=3):
             if "machine doesn't" in t or "doesn't start" in t or "doesn't cut" in t:
                 score += 4
 
-            if score >= 6:
+            if score >= 5:
                 candidates.append((score, p))
 
         if candidates:
+            # ترتيب الصفحات حسب التطابق
             candidates.sort(key=lambda x: x[0], reverse=True)
-            best_pages = [item[1] for item in candidates[:top_k]]
-            return best_pages, display_label, "trouble_table"
+            primary_hit = candidates[0][1]
+            filepath = primary_hit["filepath"]
+            first_page = primary_hit["page"]
+
+            # جلب الصفحات المتتالية التابعة لنفس الجدول (مثلاً صفحة 34 وصفحة 35 التي تليها)
+            sequential_pages = [
+                p for p in manual_pages
+                if p["filepath"] == filepath and first_page <= p["page"] <= first_page + 3
+            ]
+            sequential_pages.sort(key=lambda x: x["page"])
+            return sequential_pages, display_label, "trouble_table"
 
     if target_keys:
         fallback = [p for p in manual_pages if any(k in p["filename"].lower() for k in target_keys) and p["page"] > 5]
@@ -411,9 +438,9 @@ def maintenance_copilot(query, input_image=None):
                 return "❌ لم يتم العثور على صورة متطابقة بصرياً مع قطع المستودع المفهرسة. يرجى إدخال اسم الماكينة، كود الإنذار، أو رقم القطعة كتابةً.\n---\n📲 تم إرسال إشعار لطاقم الصيانة بالمتابعة.", None, None
 
     if not clean_q:
-        return "⚠️ يرجى إدخال اسم الماكينة بالعربي (مثل: ماكينة الفنت أو الفتح)، كود الإنذار (E002)، أو رقم القطعة.", None, None
+        return "⚠️ يرجى إدخال اسم الماكينة بالعربي (مثل: السكالدر أو الفنت أو الفتح)، كود الإنذار (E002)، أو رقم القطعة.", None, None
 
-    hits, matched_term, hit_type = search_engine(clean_q, top_k=3)
+    hits, matched_term, hit_type = search_engine(clean_q, top_k=4)
     if not matched_warehouse_image and hit_type not in ["alarm", "trouble_table"]:
         matched_warehouse_image = find_image_for_part(matched_term if matched_term else clean_q)
 
@@ -433,21 +460,31 @@ def maintenance_copilot(query, input_image=None):
         else:
             response.append(f"⚠️ No direct catalog page found for `{matched_term}` in current indexed manuals.")
 
-    # 2. جداول استكشاف الأعطال (Trouble Shooting Tables)
+    # 2. جداول استكشاف الأعطال الشاملة (جميع المشاكل من كل الصفحات)
     elif hit_type == "trouble_table":
-        response.append(f"## 🛠️ {matched_term} - Official Trouble Shooting Guide\n")
+        response.append(f"## 🛠️ {matched_term} - Complete Technical Troubleshooting Records\n")
         if hits:
+            # أ) استخراج صورة الماكينة من صفحة الغلاف في المربع الجانبي
             matched_warehouse_image = render_machine_cover_image(hits[0]['filepath'])
             
-            ai_insight = ask_gemini_engineer(clean_q, hits[0]['text'])
+            # ب) تجميع النص الكامل لجميع صفحات الجدول المتتالية
+            combined_trouble_text = "\n\n--- NEXT PAGE ---\n\n".join(
+                f"[Page {p['page']}]\n" + p['text'] for p in hits
+            )
+            
+            # ج) إرسال النص المجمع كاملاً لـ Gemini لاستخراج كافة الصفوف والحلول
+            ai_insight = ask_gemini_engineer(clean_q, combined_trouble_text)
             if ai_insight:
                 response.append(ai_insight)
                 response.append("\n" + "="*55 + "\n")
             
-            response.append(f"📖 **Technical Manual Reference:** `{hits[0]['filename']}` (Page {hits[0]['page']})")
-            matched_catalog_page_img = render_pdf_page_to_image(hits[0]['filepath'], hits[0]['page'])
+            # د) دمج صفحات الجدول كاملة وعرضها كصورة متصلة في الأسفل للتوثيق
+            pages_numbers = [p['page'] for p in hits]
+            pages_str = ", ".join(str(n) for n in pages_numbers)
+            response.append(f"📖 **Technical Manual Reference:** `{hits[0]['filename']}` (Pages: {pages_str})")
+            matched_catalog_page_img = render_troubleshooting_pages_stitched(hits[0]['filepath'], pages_numbers)
         else:
-            response.append(f"⚠️ لم يتم العثور على صفحة جدول الأعطال الخاصة بـ `{matched_term}`.")
+            response.append(f"⚠️ لم يتم العثور على صفحات جدول الأعطال الخاصة بـ `{matched_term}`.")
 
     # 3. أرقام القطع والبحث العام
     else:
@@ -478,19 +515,20 @@ def maintenance_copilot(query, input_image=None):
             response.append(f"❌ لم يتم العثور على أي تطابق لطلبك `{clean_q}` داخل صفحات الكتالوجات.")
 
     if matched_warehouse_image:
-        response.append("\n🖼️ **تم إرفاق صورة الماكينة / القطعة في المربع الجانبي.**")
+        response.append("\n🖼️ **تم إرفاق صورة الماكينة الكاملة في المربع الأيسر.**")
     if matched_catalog_page_img:
-        response.append("📖 **تم استخراج صورة صفحة الكتالوج / جدول الأعطال الرسمي أدناه.**")
+        response.append("📖 **تم دمج وعرض صفحات جدول الأعطال الكاملة للتوثيق في المربع الأيمن.**")
 
+    # إشعار الواتساب التلقائي
     tz = pytz.timezone('Asia/Hebron')
     timestamp = datetime.now(tz).strftime('%Y-%m-%d %I:%M %p')
     alert_msg = f"🔔 *إشعار صيانة وتشخيص - مسلخ عزيزا*\n"
     alert_msg += f"⏰ الوقت: {timestamp}\n"
     alert_msg += f"🔍 الاستعلام: `{clean_q}`\n"
     if hits:
-        alert_msg += f"📖 المرجع: {hits[0]['filename']} (صفحة {hits[0]['page']})\n"
+        alert_msg += f"📖 المرجع: {hits[0]['filename']} (Pages: {', '.join(str(p['page']) for p in hits)})\n"
     if matched_warehouse_image:
-        alert_msg += f"🖼️ الحالة: تم استخراج صورة الماكينة/القطعة."
+        alert_msg += f"🖼️ الحالة: تم استخراج صورة الماكينة وجدول الأعطال كاملاً."
 
     send_whatsapp_alert(alert_msg)
     response.append("\n---\n📲 تم إرسال إشعار فوري لطاقم الصيانة عبر الواتساب.")
@@ -513,13 +551,13 @@ HEADER_HTML = f"""
             </div>
             <div>
                 <h1 style="margin: 0; font-size: 23px; font-weight: 800; color: #ffffff;">شركة دواجن فلسطين - مسلخ عزيزا</h1>
-                <p style="margin: 4px 0 0 0; font-size: 14px; color: #e8f5e9;">نظام الصيانة والتشخيص الهندسي الذكي  بـ  (خطوط Meyn • ماكينات التغليف Automac • منظومات التبريد)</p>
+                <p style="margin: 4px 0 0 0; font-size: 14px; color: #e8f5e9;">نظام الصيانة والتشخيص الهندسي الذكي المدعوم بـ AI (خطوط Meyn • ماكينات التغليف Automac • منظومات التبريد)</p>
             </div>
         </div>
         <div style="border-right: 2px solid rgba(255,255,255,0.25); padding-right: 20px;">
             <span style="font-size: 12px; color: #c8e6c9; display: block;">إعداد وتطوير النظام:</span>
             <span style="font-size: 16px; font-weight: bold; color: #ffeb3b;">م. فادي محمود</span>
-            <span style="font-size: 12px; color: #e8f5e9; display: block;">مسؤول قسم الصيانة </span>
+            <span style="font-size: 12px; color: #e8f5e9; display: block;">مسؤول قسم الصيانة والأتمتة</span>
         </div>
     </div>
 </div>
@@ -529,24 +567,24 @@ with gr.Blocks(title="منصة الصيانة الهندسية الذكية - م
     gr.HTML(HEADER_HTML)
     
     with gr.Row():
-        status_box = gr.Markdown(f"📊 **حالة النظام:** تم تجهيز وفهرسة `{total_manuals}` كتالوج فني، وربط جداول أعطال الماكينات مع المساعد الذكي.")
+        status_box = gr.Markdown(f"📊 **حالة النظام:** تم تجهيز وفهرسة `{total_manuals}` كتالوج فني، مع استخراج كامل لجداول الأعطال وصور الماكينات.")
         
     with gr.Row():
         with gr.Column(scale=1):
             query_input = gr.Textbox(
                 label="أدخل استعلامك: اسم الماكينة بالعربي / كود الإنذار (E002) / رقم القطعة (4 مقاطع)",
-                placeholder="أمثلة: ماكينة الفنت | مشاكل ماكينة الفتح 0450 | المايسترو | عطل في حوض السمط | E002 | W010 | 0990.AD05.007.00",
+                placeholder="أمثلة: ما هي مشاكل السكالدر | مشاكل ماكينة الفتح | ماكينة الفنت | المايسترو | E002 | W010",
                 lines=2
             )
             image_input = gr.Image(type="pil", label="أو ارفع صورة القطعة للتعرف البصري عليها ومطابقتها")
-            submit_btn = gr.Button("تشخيص العطل ومطابقة القطعة 🔍", variant="primary")
+            submit_btn = gr.Button("تشخيص العطل واستخراج كافة المشاكل والحلول 🔍", variant="primary")
             clear_btn = gr.Button("مسح الحقول")
             
         with gr.Column(scale=1):
-            output_box = gr.Markdown(label="تقرير الفحص الفني والحلول")
+            output_box = gr.Markdown(label="تقرير الفحص الفني وجدول الأعطال الكامل")
             with gr.Row():
-                matched_warehouse_img_output = gr.Image(type="filepath", label="صورة الماكينة / القطعة")
-                matched_catalog_page_output = gr.Image(type="filepath", label="مخطط وصفحة الكتالوج الفني / جدول استكشاف الأعطال")
+                matched_warehouse_img_output = gr.Image(type="filepath", label="صورة الماكينة الكاملة / قطعة المستودع")
+                matched_catalog_page_output = gr.Image(type="filepath", label="صفحات جدول الأعطال الكاملة (مدمجة)")
             
     submit_btn.click(
         fn=maintenance_copilot,
