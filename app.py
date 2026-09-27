@@ -22,9 +22,9 @@ BUCKET_NAME = "aziza-manuals-storage"
 BASE_DIR = "/tmp/Maintenance_Manuals"
 IMAGE_DIR = os.path.join(BASE_DIR, "Real_Parts_Images")
 
-# رابط تصدير ملف Google Sheet المباشر
+# رابط استعلام جدول Google Sheets المباشر والمستقر
 SHEET_ID = "1_scf-CUSouwQvJan4d12UuC7LX8eHC7E4YAjC41q2r4"
-GOOGLE_SHEET_CSV_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid=0"
+GOOGLE_SHEET_CSV_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv"
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 ai_client = None
@@ -93,60 +93,52 @@ def clean_part_key(key_text):
     return re.sub(r'[^a-zA-Z0-9]', '', str(key_text)).lower()
 
 def fetch_inventory_data():
-    """قراءة بيانات المخزون من Google Sheets مع تخزين مؤقت مدته 5 دقائق"""
+    """قراءة بيانات المخزون من Google Sheets مع كاش سريع لتحديث البيانات فورياً"""
     current_time = time.time()
-    if inventory_cache["data"] and (current_time - inventory_cache["last_sync"] < 300):
+    if inventory_cache["data"] and (current_time - inventory_cache["last_sync"] < 30):
         return inventory_cache["data"]
 
     try:
-        res = requests.get(GOOGLE_SHEET_CSV_URL, timeout=8)
+        headers_req = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
+        }
+        res = requests.get(GOOGLE_SHEET_CSV_URL, headers=headers_req, timeout=10, allow_redirects=True)
+        
         if res.status_code == 200:
             lines = res.text.splitlines()
             reader = csv.reader(lines)
-            rows = list(reader)
-            if rows:
-                headers = [h.strip().lower() for h in rows[0]]
-                
-                # البحث التلقائي عن أسماء الأعمدة مهما كانت تسميتها
-                part_idx = 0
-                qty_idx = 1 if len(headers) > 1 else None
-                loc_idx = None
-                desc_idx = None
-
-                for i, h in enumerate(headers):
-                    if any(k in h for k in ["part", "code", "رقم", "كود", "قطعة"]):
-                        part_idx = i
-                    elif any(k in h for k in ["qty", "stock", "quantity", "عدد", "كمية", "رصيد"]):
-                        qty_idx = i
-                    elif any(k in h for k in ["loc", "shelf", "rack", "موقع", "رف", "مكان"]):
-                        loc_idx = i
-                    elif any(k in h for k in ["name", "desc", "اسم", "وصف"]):
-                        desc_idx = i
-
+            rows = [r for r in reader if any(field.strip() for field in r)]
+            
+            if len(rows) >= 2:
                 data_map = {}
                 for row in rows[1:]:
-                    if not row or len(row) <= part_idx:
+                    if len(row) < 3:
                         continue
-                    raw_code = row[part_idx].strip()
-                    if not raw_code:
+                    raw_code = str(row[0]).strip().strip('"')
+                    if not raw_code or raw_code.lower() in ['nan', 'none', '']:
                         continue
-                    k = clean_part_key(raw_code)
-                    qty_val = row[qty_idx].strip() if qty_idx is not None and len(row) > qty_idx else "0"
-                    loc_val = row[loc_idx].strip() if loc_idx is not None and len(row) > loc_idx else "غير محدد"
-                    desc_val = row[desc_idx].strip() if desc_idx is not None and len(row) > desc_idx else ""
+                    
+                    clean_k = clean_part_key(raw_code)
+                    part_name = str(row[1]).strip().strip('"') if len(row) > 1 else ""
+                    qty_val = str(row[2]).strip().strip('"') if len(row) > 2 else "0"
+                    loc_val = str(row[3]).strip().strip('"') if len(row) > 3 else "مستودع قطع الغيار"
+                    min_stock = str(row[4]).strip().strip('"') if len(row) > 4 else "0"
 
-                    data_map[k] = {
+                    data_map[clean_k] = {
                         "raw_code": raw_code,
+                        "name": part_name,
                         "qty": qty_val,
                         "location": loc_val,
-                        "desc": desc_val
+                        "min_stock": min_stock
                     }
 
                 inventory_cache["data"] = data_map
                 inventory_cache["last_sync"] = current_time
-                print(f"[✓] Synced {len(data_map)} spare parts from Google Sheet.")
+                print(f"[✓] Google Sheet Connected: {len(data_map)} items loaded.")
+        else:
+            print(f"[!] HTTP Error fetching Google Sheet: {res.status_code}")
     except Exception as e:
-        print(f"[!] Warning reading Google Sheet: {e}")
+        print(f"[!] Error fetching Google Sheet: {e}")
 
     return inventory_cache["data"]
 
@@ -156,11 +148,14 @@ def get_part_inventory_info(part_query):
         return None
 
     clean_target = clean_part_key(part_query)
+    
+    # 1. تطابق كود مباشر
     if clean_target in inv_data:
         return inv_data[clean_target]
 
+    # 2. تطابق جزئي لأرقام القطع
     for k, info in inv_data.items():
-        if len(clean_target) >= 5 and (clean_target in k or k in clean_target):
+        if len(clean_target) >= 6 and (clean_target in k or k in clean_target):
             return info
 
     return None
@@ -239,7 +234,6 @@ for p in ["logo.png", "/app/logo.png"]:
 # 4. دوال استخراج ومعالجة الصور ودمج الصفحات
 # ==========================================
 def render_pdf_page_to_image(filepath, page_num):
-    """تحويل صفحة PDF واحدة إلى صورة"""
     try:
         doc = fitz.open(filepath)
         page = doc[page_num - 1]
@@ -252,7 +246,6 @@ def render_pdf_page_to_image(filepath, page_num):
         return None
 
 def render_troubleshooting_pages_stitched(filepath, page_list):
-    """دمج صفحات جدول الأعطال المتتالية في صورة عمودية واحدة عالية الدقة"""
     if not page_list:
         return None
     if len(page_list) == 1:
@@ -261,7 +254,7 @@ def render_troubleshooting_pages_stitched(filepath, page_list):
     try:
         doc = fitz.open(filepath)
         pil_images = []
-        for p_num in page_list[:3]:  # دمج ما يصل إلى 3 صفحات كحد أقصى لجدول الأعطال
+        for p_num in page_list[:3]:
             page = doc[p_num - 1]
             pix = page.get_pixmap(dpi=140)
             img_data = pix.tobytes("png")
@@ -284,7 +277,6 @@ def render_troubleshooting_pages_stitched(filepath, page_list):
         return render_pdf_page_to_image(filepath, page_list[0])
 
 def render_machine_cover_image(filepath):
-    """استخراج صورة غلاف الكتالوج لعرض صورة الماكينة الحقيقية"""
     try:
         doc = fitz.open(filepath)
         page = doc[0]
@@ -356,7 +348,7 @@ FULL TROUBLESHOOTING SECTION TEXT:
 \"\"\"{context_text[:12000]}\"\"\"
 
 MANDATORY INSTRUCTIONS:
-1. EXHAUSTIVE EXTRACTION: Do NOT summarize, omit, or truncate ANY failure. You MUST extract EVERY SINGLE ROW and condition listed across all the manual pages provided.
+1. EXHAUSTIVE EXTRACTION: Do NOT summarize, omit, or truncate ANY failure. Extract EVERY SINGLE ROW and condition listed across all the manual pages provided.
 2. OUTPUT FORMAT:
    First, output a complete, cleanly structured Markdown Table containing all problems:
    | # | Failure / Symptom | Possible Cause | Corrective Action / Solution |
@@ -365,7 +357,7 @@ MANDATORY INSTRUCTIONS:
 3. ACTION CHECKLIST:
    After the table, generate a prioritized "Quick Field Checklist" in technical English highlighting critical inspection points (Sensors, Pneumatics, Mechanical drives, Safety circuits).
 4. TONE & LANGUAGE:
-   Strictly Technical English. Direct, professional, and completely free of conversational filler (do NOT say "Here is the table" or "Sure").
+   Strictly Technical English. Direct, professional, and completely free of conversational filler.
 """
     try:
         response = ai_client.models.generate_content(
@@ -421,12 +413,12 @@ def search_engine(query, top_k=5):
     # 3. خريطة ماكينات المجزر
     all_machines_map = {
         "مايسترو": {"name": "ماكينة التفريغ مايسترو (Maestro)", "keys": ["maestro", "eviscerat", "0600"]},
-        "مايسترو": {"name": "ماكينة التفريغ مايسترو (Maestro)", "keys": ["maestro", "eviscerat", "0600", "unloader", "2360", "3860"]},
+        "تفريغ": {"name": "ماكينة التفريغ مايسترو (Maestro)", "keys": ["maestro", "eviscerat", "0600", "unloader", "2360", "3860"]},
         "فتح": {"name": "ماكينة الفتح والمقص (Opening Scissors)", "keys": ["opening", "scissors", "0450"]},
         "مقص": {"name": "ماكينة الفتح والمقص (Opening Scissors)", "keys": ["opening", "scissors", "0450"]},
         "فنت": {"name": "ماكينة قص المخرج الفنت (Vent Cutter)", "keys": ["vent", "cutter", "0100"]},
-        "معاطة": {"name": "ماكينة نزع الريش (Plucker)", "keys": ["plucker", "picking", "jm64", "2470", "0770"]},
-        "سكالدر": {"name": "حوض السمط (Scalder)", "keys": ["scalder", "scalding", "0560", "0990"]},
+        "رياشة": {"name": "ماكينة نزع الريش (Plucker)", "keys": ["plucker", "picking", "jm64", "2470", "0770"]},
+        "سمط": {"name": "حوض السمط (Scalder)", "keys": ["scalder", "scalding", "0560", "0990"]},
         "سكالدر": {"name": "حوض السمط (Scalder)", "keys": ["scalder", "scalding", "0560", "0990"]},
         "قوانص": {"name": "ماكينة تنظيف القوانص (Gizzard Processor)", "keys": ["gizzard", "peeler", "cd-6000", "1860"]},
         "تعليق": {"name": "سير الشواكل والتعليق (Overhead Conveyor)", "keys": ["shackle", "overhead", "0230"]},
@@ -529,21 +521,24 @@ def maintenance_copilot(query, input_image=None):
     if not clean_q:
         return "⚠️ يرجى إدخال اسم الماكينة بالعربي (مثل: السكالدر أو الفنت أو الفتح)، كود الإنذار (E002)، أو رقم القطعة.", None, None
 
-    # فحص رصيد القطعة مباشرة من Google Sheet
+    # فحص رصيد القطعة في مستودع المسلخ من Google Sheet
     inv_info = get_part_inventory_info(clean_q)
     if inv_info:
         qty_str = inv_info["qty"]
         try:
             qty_num = float(re.sub(r'[^0-9.]', '', qty_str))
-            status_badge = "🟢 متوفر ورصيد آمن" if qty_num > 2 else ("🟡 رصيد منخفض (يجب الطلب)" if qty_num > 0 else "🔴 نافد من المستودع")
+            status_badge = "🟢 متوفر ورصيد آمن" if qty_num > 2 else ("🟡 رصيد منخفض" if qty_num > 0 else "🔴 نافد من المستودع")
         except Exception:
-            status_badge = "⚪ الرصيد مسجل"
+            status_badge = "⚪ رصيد مسجل"
 
-        stock_box = f"""> 📦 **حالة المخزون الميداني (مستودع المسلخ - Google Sheet):**
-> * **كود القطعة المسجل:** `{inv_info['raw_code']}`
-> * **الرصيد الفعلي المتوفر:** **`{qty_str}`** ({status_badge})
-> * **موقع التخزين / الرف:** `{inv_info['location']}`
-"""
+        stock_box = (
+            f"### 📦 بطاقة المخزون الميداني (مستودع المسلخ - Google Sheet):\n"
+            f"- **رقم القطعة:** `{inv_info['raw_code']}`\n"
+            f"- **اسم القطعة:** {inv_info['name']}\n"
+            f"- **الكمية المتوفرة حالياً:** **`{qty_str}`** ({status_badge})\n"
+            f"- **موقع التخزين / الرف:** {inv_info['location']}\n\n"
+            f"---\n"
+        )
         response.append(stock_box)
 
     hits, matched_term, hit_type = search_engine(clean_q, top_k=4)
@@ -685,7 +680,7 @@ with gr.Blocks(title="منصة الصيانة الهندسية الذكية - م
             clear_btn = gr.Button("مسح الحقول")
             
         with gr.Column(scale=1):
-            output_box = gr.Markdown(label="تقرير الفحص الفني وجدول الأعطال الكامل")
+            output_box = gr.Markdown(label="تقرير الفحص الفني وجدول الأعطال والمخزون")
             with gr.Row():
                 matched_warehouse_img_output = gr.Image(type="filepath", label="صورة الماكينة الكاملة / قطعة المستودع")
                 matched_catalog_page_output = gr.Image(type="filepath", label="صفحات جدول الأعطال الكاملة (مدمجة)")
