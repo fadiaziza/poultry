@@ -10,3 +10,4 @@ google-auth
 google-cloud-storage
 imagehash
 google-genai
+pandas
