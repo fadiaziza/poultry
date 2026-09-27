@@ -421,12 +421,12 @@ def search_engine(query, top_k=5):
     # 3. خريطة ماكينات المجزر
     all_machines_map = {
         "مايسترو": {"name": "ماكينة التفريغ مايسترو (Maestro)", "keys": ["maestro", "eviscerat", "0600"]},
-        "تفريغ": {"name": "ماكينة التفريغ مايسترو (Maestro)", "keys": ["maestro", "eviscerat", "0600", "unloader", "2360", "3860"]},
+        "مايسترو": {"name": "ماكينة التفريغ مايسترو (Maestro)", "keys": ["maestro", "eviscerat", "0600", "unloader", "2360", "3860"]},
         "فتح": {"name": "ماكينة الفتح والمقص (Opening Scissors)", "keys": ["opening", "scissors", "0450"]},
         "مقص": {"name": "ماكينة الفتح والمقص (Opening Scissors)", "keys": ["opening", "scissors", "0450"]},
         "فنت": {"name": "ماكينة قص المخرج الفنت (Vent Cutter)", "keys": ["vent", "cutter", "0100"]},
-        "رياشة": {"name": "ماكينة نزع الريش (Plucker)", "keys": ["plucker", "picking", "jm64", "2470", "0770"]},
-        "سمط": {"name": "حوض السمط (Scalder)", "keys": ["scalder", "scalding", "0560", "0990"]},
+        "معاطة": {"name": "ماكينة نزع الريش (Plucker)", "keys": ["plucker", "picking", "jm64", "2470", "0770"]},
+        "سكالدر": {"name": "حوض السمط (Scalder)", "keys": ["scalder", "scalding", "0560", "0990"]},
         "سكالدر": {"name": "حوض السمط (Scalder)", "keys": ["scalder", "scalding", "0560", "0990"]},
         "قوانص": {"name": "ماكينة تنظيف القوانص (Gizzard Processor)", "keys": ["gizzard", "peeler", "cd-6000", "1860"]},
         "تعليق": {"name": "سير الشواكل والتعليق (Overhead Conveyor)", "keys": ["shackle", "overhead", "0230"]},
