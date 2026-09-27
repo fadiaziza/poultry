@@ -2,6 +2,8 @@ import os
 import glob
 import re
 import io
+import time
+import csv
 import base64
 import fitz  # PyMuPDF
 import requests
@@ -19,6 +21,10 @@ PORT = int(os.environ.get("PORT", 8080))
 BUCKET_NAME = "aziza-manuals-storage"
 BASE_DIR = "/tmp/Maintenance_Manuals"
 IMAGE_DIR = os.path.join(BASE_DIR, "Real_Parts_Images")
+
+# رابط تصدير ملف Google Sheet المباشر
+SHEET_ID = "1_scf-CUSouwQvJan4d12UuC7LX8eHC7E4YAjC41q2r4"
+GOOGLE_SHEET_CSV_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid=0"
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 ai_client = None
@@ -74,7 +80,93 @@ def send_whatsapp_alert(message):
         print(f"[!] WhatsApp notification error: {err}")
 
 # ==========================================
-# 2. فهرسة صفحات الكتالوجات وبصمات صور المستودع
+# 2. محرك مخزون قطع الغيار من Google Sheets
+# ==========================================
+inventory_cache = {
+    "data": {},
+    "last_sync": 0
+}
+
+def clean_part_key(key_text):
+    if not key_text:
+        return ""
+    return re.sub(r'[^a-zA-Z0-9]', '', str(key_text)).lower()
+
+def fetch_inventory_data():
+    """قراءة بيانات المخزون من Google Sheets مع تخزين مؤقت مدته 5 دقائق"""
+    current_time = time.time()
+    if inventory_cache["data"] and (current_time - inventory_cache["last_sync"] < 300):
+        return inventory_cache["data"]
+
+    try:
+        res = requests.get(GOOGLE_SHEET_CSV_URL, timeout=8)
+        if res.status_code == 200:
+            lines = res.text.splitlines()
+            reader = csv.reader(lines)
+            rows = list(reader)
+            if rows:
+                headers = [h.strip().lower() for h in rows[0]]
+                
+                # البحث التلقائي عن أسماء الأعمدة مهما كانت تسميتها
+                part_idx = 0
+                qty_idx = 1 if len(headers) > 1 else None
+                loc_idx = None
+                desc_idx = None
+
+                for i, h in enumerate(headers):
+                    if any(k in h for k in ["part", "code", "رقم", "كود", "قطعة"]):
+                        part_idx = i
+                    elif any(k in h for k in ["qty", "stock", "quantity", "عدد", "كمية", "رصيد"]):
+                        qty_idx = i
+                    elif any(k in h for k in ["loc", "shelf", "rack", "موقع", "رف", "مكان"]):
+                        loc_idx = i
+                    elif any(k in h for k in ["name", "desc", "اسم", "وصف"]):
+                        desc_idx = i
+
+                data_map = {}
+                for row in rows[1:]:
+                    if not row or len(row) <= part_idx:
+                        continue
+                    raw_code = row[part_idx].strip()
+                    if not raw_code:
+                        continue
+                    k = clean_part_key(raw_code)
+                    qty_val = row[qty_idx].strip() if qty_idx is not None and len(row) > qty_idx else "0"
+                    loc_val = row[loc_idx].strip() if loc_idx is not None and len(row) > loc_idx else "غير محدد"
+                    desc_val = row[desc_idx].strip() if desc_idx is not None and len(row) > desc_idx else ""
+
+                    data_map[k] = {
+                        "raw_code": raw_code,
+                        "qty": qty_val,
+                        "location": loc_val,
+                        "desc": desc_val
+                    }
+
+                inventory_cache["data"] = data_map
+                inventory_cache["last_sync"] = current_time
+                print(f"[✓] Synced {len(data_map)} spare parts from Google Sheet.")
+    except Exception as e:
+        print(f"[!] Warning reading Google Sheet: {e}")
+
+    return inventory_cache["data"]
+
+def get_part_inventory_info(part_query):
+    inv_data = fetch_inventory_data()
+    if not inv_data or not part_query:
+        return None
+
+    clean_target = clean_part_key(part_query)
+    if clean_target in inv_data:
+        return inv_data[clean_target]
+
+    for k, info in inv_data.items():
+        if len(clean_target) >= 5 and (clean_target in k or k in clean_target):
+            return info
+
+    return None
+
+# ==========================================
+# 3. فهرسة صفحات الكتالوجات وبصمات صور المستودع
 # ==========================================
 manual_pages = []
 
@@ -144,7 +236,7 @@ for p in ["logo.png", "/app/logo.png"]:
             pass
 
 # ==========================================
-# 3. دوال استخراج ومعالجة الصور ودمج الصفحات
+# 4. دوال استخراج ومعالجة الصور ودمج الصفحات
 # ==========================================
 def render_pdf_page_to_image(filepath, page_num):
     """تحويل صفحة PDF واحدة إلى صورة"""
@@ -175,7 +267,6 @@ def render_troubleshooting_pages_stitched(filepath, page_list):
             img_data = pix.tobytes("png")
             pil_images.append(Image.open(io.BytesIO(img_data)))
         
-        # حساب أبعاد الصورة المدمجة
         max_width = max(im.width for im in pil_images)
         total_height = sum(im.height for im in pil_images)
         
@@ -247,7 +338,7 @@ def find_image_for_part(query_text):
     return None
 
 # ==========================================
-# 4. محرك Gemini لاستخراج جميع الأعطال بالكامل
+# 5. محرك Gemini لاستخراج جميع الأعطال بالكامل
 # ==========================================
 def ask_gemini_engineer(user_query, context_text):
     if not ai_client or not context_text:
@@ -287,7 +378,7 @@ MANDATORY INSTRUCTIONS:
         return ""
 
 # ==========================================
-# 5. محرك البحث الذكي (متعدد الصفحات للأعطال)
+# 6. محرك البحث الذكي (متعدد الصفحات للأعطال)
 # ==========================================
 def search_engine(query, top_k=5):
     if not manual_pages:
@@ -392,13 +483,11 @@ def search_engine(query, top_k=5):
                 candidates.append((score, p))
 
         if candidates:
-            # ترتيب الصفحات حسب التطابق
             candidates.sort(key=lambda x: x[0], reverse=True)
             primary_hit = candidates[0][1]
             filepath = primary_hit["filepath"]
             first_page = primary_hit["page"]
 
-            # جلب الصفحات المتتالية التابعة لنفس الجدول (مثلاً صفحة 34 وصفحة 35 التي تليها)
             sequential_pages = [
                 p for p in manual_pages
                 if p["filepath"] == filepath and first_page <= p["page"] <= first_page + 3
@@ -414,7 +503,7 @@ def search_engine(query, top_k=5):
     return [], None, None
 
 # ==========================================
-# 6. دالة المعالجة والتوجيه الرئيسية
+# 7. دالة المعالجة والتوجيه الرئيسية
 # ==========================================
 def maintenance_copilot(query, input_image=None):
     clean_q = query.strip() if query else ""
@@ -440,6 +529,23 @@ def maintenance_copilot(query, input_image=None):
     if not clean_q:
         return "⚠️ يرجى إدخال اسم الماكينة بالعربي (مثل: السكالدر أو الفنت أو الفتح)، كود الإنذار (E002)، أو رقم القطعة.", None, None
 
+    # فحص رصيد القطعة مباشرة من Google Sheet
+    inv_info = get_part_inventory_info(clean_q)
+    if inv_info:
+        qty_str = inv_info["qty"]
+        try:
+            qty_num = float(re.sub(r'[^0-9.]', '', qty_str))
+            status_badge = "🟢 متوفر ورصيد آمن" if qty_num > 2 else ("🟡 رصيد منخفض (يجب الطلب)" if qty_num > 0 else "🔴 نافد من المستودع")
+        except Exception:
+            status_badge = "⚪ الرصيد مسجل"
+
+        stock_box = f"""> 📦 **حالة المخزون الميداني (مستودع المسلخ - Google Sheet):**
+> * **كود القطعة المسجل:** `{inv_info['raw_code']}`
+> * **الرصيد الفعلي المتوفر:** **`{qty_str}`** ({status_badge})
+> * **موقع التخزين / الرف:** `{inv_info['location']}`
+"""
+        response.append(stock_box)
+
     hits, matched_term, hit_type = search_engine(clean_q, top_k=4)
     if not matched_warehouse_image and hit_type not in ["alarm", "trouble_table"]:
         matched_warehouse_image = find_image_for_part(matched_term if matched_term else clean_q)
@@ -464,21 +570,17 @@ def maintenance_copilot(query, input_image=None):
     elif hit_type == "trouble_table":
         response.append(f"## 🛠️ {matched_term} - Complete Technical Troubleshooting Records\n")
         if hits:
-            # أ) استخراج صورة الماكينة من صفحة الغلاف في المربع الجانبي
             matched_warehouse_image = render_machine_cover_image(hits[0]['filepath'])
             
-            # ب) تجميع النص الكامل لجميع صفحات الجدول المتتالية
             combined_trouble_text = "\n\n--- NEXT PAGE ---\n\n".join(
                 f"[Page {p['page']}]\n" + p['text'] for p in hits
             )
             
-            # ج) إرسال النص المجمع كاملاً لـ Gemini لاستخراج كافة الصفوف والحلول
             ai_insight = ask_gemini_engineer(clean_q, combined_trouble_text)
             if ai_insight:
                 response.append(ai_insight)
                 response.append("\n" + "="*55 + "\n")
             
-            # د) دمج صفحات الجدول كاملة وعرضها كصورة متصلة في الأسفل للتوثيق
             pages_numbers = [p['page'] for p in hits]
             pages_str = ", ".join(str(n) for n in pages_numbers)
             response.append(f"📖 **Technical Manual Reference:** `{hits[0]['filename']}` (Pages: {pages_str})")
@@ -525,6 +627,8 @@ def maintenance_copilot(query, input_image=None):
     alert_msg = f"🔔 *إشعار صيانة وتشخيص - مسلخ عزيزا*\n"
     alert_msg += f"⏰ الوقت: {timestamp}\n"
     alert_msg += f"🔍 الاستعلام: `{clean_q}`\n"
+    if inv_info:
+        alert_msg += f"📦 رصيد المخزون المتوفر: {inv_info['qty']} (موقع: {inv_info['location']})\n"
     if hits:
         alert_msg += f"📖 المرجع: {hits[0]['filename']} (Pages: {', '.join(str(p['page']) for p in hits)})\n"
     if matched_warehouse_image:
@@ -536,7 +640,7 @@ def maintenance_copilot(query, input_image=None):
     return "\n".join(response), matched_warehouse_image, matched_catalog_page_img
 
 # ==========================================
-# 7. واجهة Gradio الرسمية
+# 8. واجهة Gradio الرسمية
 # ==========================================
 total_manuals = len(glob.glob(os.path.join(BASE_DIR, "**/*.pdf"), recursive=True))
 
@@ -567,7 +671,7 @@ with gr.Blocks(title="منصة الصيانة الهندسية الذكية - م
     gr.HTML(HEADER_HTML)
     
     with gr.Row():
-        status_box = gr.Markdown(f"📊 **حالة النظام:** تم تجهيز وفهرسة `{total_manuals}` كتالوج فني، مع استخراج كامل لجداول الأعطال وصور الماكينات.")
+        status_box = gr.Markdown(f"📊 **حالة النظام:** تم تجهيز وفهرسة `{total_manuals}` كتالوج فني، وربط مخزون المستودع الميداني عبر Google Sheets بنجاح.")
         
     with gr.Row():
         with gr.Column(scale=1):
