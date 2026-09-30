@@ -13,7 +13,6 @@ from PIL import Image, ImageStat
 import gradio as gr
 from google.cloud import storage
 from google import genai
-from google.genai import types
 
 # ==========================================
 # 0. إعدادات السحابة والمنفذ والذكاء الاصطناعي
@@ -23,6 +22,7 @@ BUCKET_NAME = "aziza-manuals-storage"
 BASE_DIR = "/tmp/Maintenance_Manuals"
 IMAGE_DIR = os.path.join(BASE_DIR, "Real_Parts_Images")
 
+# رابط استعلام جدول Google Sheets المباشر والمستقر
 SHEET_ID = "1_scf-CUSouwQvJan4d12UuC7LX8eHC7E4YAjC41q2r4"
 GOOGLE_SHEET_CSV_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv"
 
@@ -93,13 +93,17 @@ def clean_part_key(key_text):
     return re.sub(r'[^a-zA-Z0-9]', '', str(key_text)).lower()
 
 def fetch_inventory_data():
+    """قراءة بيانات المخزون من Google Sheets مع كاش سريع لتحديث البيانات فورياً"""
     current_time = time.time()
     if inventory_cache["data"] and (current_time - inventory_cache["last_sync"] < 30):
         return inventory_cache["data"]
 
     try:
-        headers_req = {'User-Agent': 'Mozilla/5.0'}
+        headers_req = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
+        }
         res = requests.get(GOOGLE_SHEET_CSV_URL, headers=headers_req, timeout=10, allow_redirects=True)
+        
         if res.status_code == 200:
             lines = res.text.splitlines()
             reader = csv.reader(lines)
@@ -131,6 +135,8 @@ def fetch_inventory_data():
                 inventory_cache["data"] = data_map
                 inventory_cache["last_sync"] = current_time
                 print(f"[✓] Google Sheet Connected: {len(data_map)} items loaded.")
+        else:
+            print(f"[!] HTTP Error fetching Google Sheet: {res.status_code}")
     except Exception as e:
         print(f"[!] Error fetching Google Sheet: {e}")
 
@@ -142,9 +148,12 @@ def get_part_inventory_info(part_query):
         return None
 
     clean_target = clean_part_key(part_query)
+    
+    # 1. تطابق كود مباشر
     if clean_target in inv_data:
         return inv_data[clean_target]
 
+    # 2. تطابق جزئي لأرقام القطع
     for k, info in inv_data.items():
         if len(clean_target) >= 6 and (clean_target in k or k in clean_target):
             return info
@@ -222,58 +231,7 @@ for p in ["logo.png", "/app/logo.png"]:
             pass
 
 # ==========================================
-# 4. محرك التعرف الصوتي المباشر والآمن عبر Gemini
-# ==========================================
-def transcribe_audio_input(audio_file_path):
-    """تحويل تسجيل الصوت إلى نص دقيق عبر رفع الملف مباشرة لسحابة Gemini"""
-    if not ai_client or not audio_file_path or not os.path.exists(audio_file_path):
-        return ""
-    
-    uploaded_file = None
-    try:
-        # استخدام Files API الرسمي من Google GenAI للتعامل مع webm و wav و mp4 بدون مشاكل كودك
-        uploaded_file = ai_client.files.upload(file=audio_file_path)
-        
-        prompt = (
-            "You are an industrial voice-to-text transcriber for Palestine Poultry Company ('Aziza Slaughterhouse'). "
-            "Listen to this audio recording spoken in Palestinian Arabic or technical English. "
-            "Transcribe the query accurately. Equipment names include: "
-            "السكالدر, السمط, الفنت, الفتح, المقص, المايسترو, التفريغ, الشواكل, القوانص, الرياشة, أوتوماك, E002, W010. "
-            "Return ONLY the exact transcribed text string. Do NOT add preamble, markdown, or quotation marks."
-        )
-        
-        response = ai_client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=[uploaded_file, prompt]
-        )
-        
-        result_text = response.text.strip().strip('"').strip("'")
-        print(f"[✓] Audio Transcribed: '{result_text}'")
-        return result_text
-    except Exception as err:
-        print(f"[!] Primary voice transcription error: {err}")
-        try:
-            # محاولة بديلة عبر تمرير البايتات المباشرة
-            with open(audio_file_path, "rb") as f:
-                audio_bytes = f.read()
-            audio_part = types.Part.from_bytes(data=audio_bytes, mime_type="audio/webm")
-            res_alt = ai_client.models.generate_content(
-                model="gemini-2.5-flash",
-                contents=[audio_part, "Transcribe this audio query into plain text only."]
-            )
-            return res_alt.text.strip().strip('"').strip("'")
-        except Exception as e_alt:
-            print(f"[!] Fallback transcription error: {e_alt}")
-            return ""
-    finally:
-        if uploaded_file:
-            try:
-                ai_client.files.delete(name=uploaded_file.name)
-            except Exception:
-                pass
-
-# ==========================================
-# 5. دوال استخراج ومعالجة الصور ودمج الصفحات
+# 4. دوال استخراج ومعالجة الصور ودمج الصفحات
 # ==========================================
 def render_pdf_page_to_image(filepath, page_num):
     try:
@@ -372,7 +330,7 @@ def find_image_for_part(query_text):
     return None
 
 # ==========================================
-# 6. محرك Gemini لاستخراج جميع الأعطال بالكامل
+# 5. محرك Gemini لاستخراج جميع الأعطال بالكامل
 # ==========================================
 def ask_gemini_engineer(user_query, context_text):
     if not ai_client or not context_text:
@@ -412,7 +370,7 @@ MANDATORY INSTRUCTIONS:
         return ""
 
 # ==========================================
-# 7. محرك البحث الذكي (متعدد الصفحات للأعطال)
+# 6. محرك البحث الذكي (متعدد الصفحات للأعطال)
 # ==========================================
 def search_engine(query, top_k=5):
     if not manual_pages:
@@ -474,7 +432,7 @@ def search_engine(query, top_k=5):
 
     is_trouble_intent = any(k in clean_q_lower for k in [
         "عطل", "مشكل", "جدول", "فحص", "صيانة", "توقف", "trouble", "fault", "failure",
-        "meyn", "ماكينات", "حل", "سبب", "سحب", "صوت"
+        "meyn", "ماكينات", "حل", "سبب", "سحب"
     ])
 
     target_keys = []
@@ -491,6 +449,7 @@ def search_engine(query, top_k=5):
         if display_label == "Meyn Machine":
             display_label = f"ماكينة موديل {num_match.group(0)}"
 
+    # عند طلب جدول الأعطال أو الاستعلام عن ماكينة
     if is_trouble_intent or target_keys:
         candidates = []
         for p in manual_pages:
@@ -536,22 +495,14 @@ def search_engine(query, top_k=5):
     return [], None, None
 
 # ==========================================
-# 8. دالة المعالجة والتوجيه الرئيسية
+# 7. دالة المعالجة والتوجيه الرئيسية
 # ==========================================
-def maintenance_copilot(query, input_image=None, input_audio=None):
+def maintenance_copilot(query, input_image=None):
     clean_q = query.strip() if query else ""
     matched_warehouse_image = None
     matched_catalog_page_img = None
     response = []
 
-    # 1. إذا وجد تسجيل صوتي ولم يُفرغ بعد، يتم تحويله هنا
-    if input_audio and not clean_q:
-        transcribed = transcribe_audio_input(input_audio)
-        if transcribed:
-            clean_q = transcribed
-            response.append(f"🎙️ **الاستعلام الصوتي المسجل:** *\"{clean_q}\"*\n")
-
-    # 2. معالجة الصورة المرفوعة للقطعة
     if input_image is not None:
         matched_part_no, matched_img = match_uploaded_image(input_image)
         if matched_part_no:
@@ -565,12 +516,12 @@ def maintenance_copilot(query, input_image=None, input_audio=None):
                 timestamp = datetime.now(tz).strftime('%Y-%m-%d %I:%M %p')
                 fail_msg = f"⚠️ *تنبيه فحص ميداني - مسلخ عزيزا*\n⏰ الوقت: {timestamp}\n📸 تم رفع صورة قطعة لم يتعرف عليها النظام تلقائياً، يرجى التحقق اليدوي."
                 send_whatsapp_alert(fail_msg)
-                return "❌ لم يتم العثور على صورة متطابقة بصرياً مع قطع المستودع المفهرسة. يرجى إدخال اسم الماكينة، كود الإنذار، أو استخدام التسجيل الصوتي.\n---\n📲 تم إرسال إشعار لطاقم الصيانة بالمتابعة.", None, None
+                return "❌ لم يتم العثور على صورة متطابقة بصرياً مع قطع المستودع المفهرسة. يرجى إدخال اسم الماكينة، كود الإنذار، أو رقم القطعة كتابةً.\n---\n📲 تم إرسال إشعار لطاقم الصيانة بالمتابعة.", None, None
 
     if not clean_q:
-        return "⚠️ يرجى التحدث بالميكروفون، كتابة اسم الماكينة (مثل: السكالدر أو الفنت)، كود الإنذار (E002)، أو رقم القطعة.", None, None
+        return "⚠️ يرجى إدخال اسم الماكينة بالعربي (مثل: السكالدر أو الفنت أو الفتح)، كود الإنذار (E002)، أو رقم القطعة.", None, None
 
-    # 3. فحص رصيد القطعة في مستودع المسلخ من Google Sheet
+    # فحص رصيد القطعة في مستودع المسلخ من Google Sheet
     inv_info = get_part_inventory_info(clean_q)
     if inv_info:
         qty_str = inv_info["qty"]
@@ -594,7 +545,7 @@ def maintenance_copilot(query, input_image=None, input_audio=None):
     if not matched_warehouse_image and hit_type not in ["alarm", "trouble_table"]:
         matched_warehouse_image = find_image_for_part(matched_term if matched_term else clean_q)
 
-    # أ) إنذارات وتحذيرات ماكينات التغليف (E / W)
+    # 1. إنذارات وتحذيرات ماكينات التغليف (E / W)
     if hit_type == "alarm" and matched_term:
         prefix = matched_term[0]
         alarm_status = "CRITICAL ALARM (MACHINE STOPPED)" if prefix == "E" else "WARNING ALERT (PREVENTIVE)"
@@ -610,7 +561,7 @@ def maintenance_copilot(query, input_image=None, input_audio=None):
         else:
             response.append(f"⚠️ No direct catalog page found for `{matched_term}` in current indexed manuals.")
 
-    # ب) جداول استكشاف الأعطال الشاملة
+    # 2. جداول استكشاف الأعطال الشاملة (جميع المشاكل من كل الصفحات)
     elif hit_type == "trouble_table":
         response.append(f"## 🛠️ {matched_term} - Complete Technical Troubleshooting Records\n")
         if hits:
@@ -632,7 +583,7 @@ def maintenance_copilot(query, input_image=None, input_audio=None):
         else:
             response.append(f"⚠️ لم يتم العثور على صفحات جدول الأعطال الخاصة بـ `{matched_term}`.")
 
-    # ج) أرقام القطع والبحث العام
+    # 3. أرقام القطع والبحث العام
     else:
         if hits:
             ai_insight = ask_gemini_engineer(clean_q, hits[0]['text'])
@@ -684,7 +635,7 @@ def maintenance_copilot(query, input_image=None, input_audio=None):
     return "\n".join(response), matched_warehouse_image, matched_catalog_page_img
 
 # ==========================================
-# 9. واجهة Gradio الرسمية مع التفريغ الصوتي التلقائي
+# 8. واجهة Gradio الرسمية
 # ==========================================
 total_manuals = len(glob.glob(os.path.join(BASE_DIR, "**/*.pdf"), recursive=True))
 
@@ -699,7 +650,7 @@ HEADER_HTML = f"""
             </div>
             <div>
                 <h1 style="margin: 0; font-size: 23px; font-weight: 800; color: #ffffff;">شركة دواجن فلسطين - مسلخ عزيزا</h1>
-                <p style="margin: 4px 0 0 0; font-size: 14px; color: #e8f5e9;">نظام الصيانة والتشخيص الهندسي الذكي المدعوم بـ AI (تحكم صوتي فوري • مطابقة بصرية • مخزون مباشر)</p>
+                <p style="margin: 4px 0 0 0; font-size: 14px; color: #e8f5e9;">نظام الصيانة والتشخيص الهندسي الذكي المدعوم بـ AI (خطوط Meyn • ماكينات التغليف Automac • منظومات التبريد)</p>
             </div>
         </div>
         <div style="border-right: 2px solid rgba(255,255,255,0.25); padding-right: 20px;">
@@ -715,17 +666,12 @@ with gr.Blocks(title="منصة الصيانة الهندسية الذكية - م
     gr.HTML(HEADER_HTML)
     
     with gr.Row():
-        status_box = gr.Markdown(f"📊 **حالة النظام:** تم تجهيز وفهرسة `{total_manuals}` كتالوج فني، وربط مخزون المستودع المباشر والمساعد الصوتي للفنيين.")
+        status_box = gr.Markdown(f"📊 **حالة النظام:** تم تجهيز وفهرسة `{total_manuals}` كتالوج فني، وربط مخزون المستودع الميداني عبر Google Sheets بنجاح.")
         
     with gr.Row():
         with gr.Column(scale=1):
-            audio_input = gr.Audio(
-                sources=["microphone", "upload"],
-                type="filepath",
-                label="🎙️ التسجيل الصوتي المباشر للفني (اضغط وتحدث وسيقوم النظام بكتابة كلامك والبحث فوراً)"
-            )
             query_input = gr.Textbox(
-                label="الاستعلام الفني (يُكتب هنا تلقائياً من الصوت أو يمكنك الكتابة يدوياً):",
+                label="أدخل استعلامك: اسم الماكينة بالعربي / كود الإنذار (E002) / رقم القطعة (4 مقاطع)",
                 placeholder="أمثلة: ما هي مشاكل السكالدر | مشاكل ماكينة الفتح | ماكينة الفنت | المايسترو | E002 | W010",
                 lines=2
             )
@@ -739,21 +685,14 @@ with gr.Blocks(title="منصة الصيانة الهندسية الذكية - م
                 matched_warehouse_img_output = gr.Image(type="filepath", label="صورة الماكينة الكاملة / قطعة المستودع")
                 matched_catalog_page_output = gr.Image(type="filepath", label="صفحات جدول الأعطال الكاملة (مدمجة)")
             
-    # ربط حدث انتهاء التسجيل الصوتي ليكتب النص مباشرة في مربع البحث أمام الفني
-    audio_input.change(
-        fn=transcribe_audio_input,
-        inputs=[audio_input],
-        outputs=[query_input]
-    )
-
     submit_btn.click(
         fn=maintenance_copilot,
-        inputs=[query_input, image_input, audio_input],
+        inputs=[query_input, image_input],
         outputs=[output_box, matched_warehouse_img_output, matched_catalog_page_output]
     )
     clear_btn.click(
-        lambda: ("", None, None, "", None, None),
-        outputs=[query_input, image_input, audio_input, output_box, matched_warehouse_img_output, matched_catalog_page_output]
+        lambda: ("", None, "", None, None),
+        outputs=[query_input, image_input, output_box, matched_warehouse_img_output, matched_catalog_page_output]
     )
 
 if __name__ == "__main__":
