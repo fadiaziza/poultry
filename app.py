@@ -83,10 +83,10 @@ def send_whatsapp_alert(message):
         print(f"[!] WhatsApp notification error: {err}")
 
 # ==========================================
-# 2. محرك تسجيل وتوثيق عمليات البحث (Search Logger)
+# 2. محرك تسجيل وتوثيق العمليات في الإكسل (Audit Logger)
 # ==========================================
-def log_search_query(query, hit_type, matched_term, stock_info):
-    """تسجيل تفاصيل العملية في ملف السجل الميداني لحساب تكرار الأعطال"""
+def log_search_query(raw_query, hit_type, machine_name, part_name, part_code, stock_info):
+    """توثيق اسم الماكينة واسم القطعة والإنذار في سجل إكسل الميداني"""
     tz = pytz.timezone('Asia/Hebron')
     timestamp = datetime.now(tz).strftime('%Y-%m-%d %I:%M:%S %p')
     
@@ -96,22 +96,39 @@ def log_search_query(query, hit_type, matched_term, stock_info):
             writer = csv.writer(f)
             if not file_exists:
                 writer.writerow([
-                    "Timestamp", "Searched_Query", "Hit_Type", 
-                    "Matched_Entity", "Stock_Available", "Warehouse_Location"
+                    "التاريخ والوقت (Timestamp)",
+                    "الاستعلام الأصلي (Original_Query)",
+                    "نوع العملية (Operation_Type)",
+                    "اسم الماكينة (Machine_Name)",
+                    "اسم القطعة (Part_Name)",
+                    "كود القطعة / رمز الإنذار (Code_or_Alarm)",
+                    "الرصيد في المستودع (Stock_Qty)",
+                    "موقع الرف / التخزين (Location)"
                 ])
             
-            qty = stock_info.get("qty", "N/A") if stock_info else "N/A"
-            loc = stock_info.get("location", "N/A") if stock_info else "N/A"
+            qty = stock_info.get("qty", "غير مسجل") if stock_info else "غير مسجل"
+            loc = stock_info.get("location", "مستودع المسلخ") if stock_info else "مستودع المسلخ"
             
+            # تحديد نوع العملية بالعربي
+            type_labels = {
+                "alarm": "إنذار تشغيلي (Alarm/Fault)",
+                "trouble_table": "استكشاف أعطال (Troubleshooting)",
+                "part": "قطعة غيار (Spare Part)",
+                "keyword": "بحث عام (General Search)"
+            }
+            op_label = type_labels.get(hit_type, "بحث عام")
+
             writer.writerow([
                 timestamp,
-                query,
-                hit_type if hit_type else "General Search",
-                matched_term if matched_term else "N/A",
+                raw_query,
+                op_label,
+                machine_name if machine_name else "ماكينات عامة / غير محدد",
+                part_name if part_name else "—",
+                part_code if part_code else "—",
                 qty,
                 loc
             ])
-            print(f"[✓] Query logged successfully: {query}")
+            print(f"[✓] Logged: Machine='{machine_name}', Part='{part_name}', Code='{part_code}'")
     except Exception as e:
         print(f"[!] Error writing search log: {e}")
 
@@ -356,6 +373,39 @@ def find_image_for_part(query_text):
             return v[1]
     return None
 
+# دالة ذكية لتحديد اسم الماكينة من اسم الكتالوج أو المحتوى
+def deduce_machine_from_filename(filename):
+    f_lower = filename.lower()
+    if any(k in f_lower for k in ["automac", "297", "298", "wrapping", "fabbri"]):
+        return "ماكينة التغليف أوتوماك (Automac)"
+    elif any(k in f_lower for k in ["maestro", "eviscerat", "0600"]):
+        return "ماكينة التفريغ مايسترو (Maestro)"
+    elif any(k in f_lower for k in ["opening", "scissors", "0450"]):
+        return "ماكينة الفتح والمقص (Opening Scissors)"
+    elif any(k in f_lower for k in ["vent", "cutter", "0100"]):
+        return "ماكينة قص المخرج الفنت (Vent Cutter)"
+    elif any(k in f_lower for k in ["scalder", "scalding", "0560", "0990"]):
+        return "حوض السمط (Scalder)"
+    elif any(k in f_lower for k in ["plucker", "picking", "jm64", "2470", "0770"]):
+        return "ماكينة نزع الريش (Plucker)"
+    elif any(k in f_lower for k in ["gizzard", "peeler", "cd-6000", "1860"]):
+        return "ماكينة تنظيف القوانص (Gizzard Processor)"
+    elif any(k in f_lower for k in ["shackle", "overhead", "0230"]):
+        return "سير الشواكل والتعليق (Overhead Conveyor)"
+    elif any(k in f_lower for k in ["pan conveyor", "pan"]):
+        return "سير البانات (Pan Conveyor Single)"
+    elif any(k in f_lower for k in ["hock", "leg cutter", "3000"]):
+        return "ماكينة قص الأرجل (Hock / Leg Cutter)"
+    elif any(k in f_lower for k in ["head puller", "2920"]):
+        return "ماكينة سحب الرؤوس (Head Puller)"
+    elif any(k in f_lower for k in ["vacuum", "lung", "robuschi", "2170", "0190"]):
+        return "مضخات الفاكيوم والشفاطات (Vacuum Pump)"
+    elif any(k in f_lower for k in ["compressor", "airpol", "atlas", "refrigeration"]):
+        return "منظومة التبريد والكمبرسورات"
+    else:
+        clean_name = os.path.splitext(filename)[0].replace("_", " ").replace("-", " ")
+        return f"ماكينة {clean_name}"
+
 # ==========================================
 # 6. محرك Gemini لاستخراج جميع الأعطال بالكامل
 # ==========================================
@@ -529,6 +579,11 @@ def maintenance_copilot(query, input_image=None):
     matched_catalog_page_img = None
     response = []
 
+    # متغيرات التوثيق الدقيق لملف الإكسل
+    recorded_machine_name = "غير محدد"
+    recorded_part_name = "—"
+    recorded_code = clean_q
+
     # 1. معالجة الصورة المرفوعة للقطعة
     if input_image is not None:
         matched_part_no, matched_img = match_uploaded_image(input_image)
@@ -537,6 +592,7 @@ def maintenance_copilot(query, input_image=None):
             matched_warehouse_image = matched_img
             if not clean_q:
                 clean_q = matched_part_no
+                recorded_code = matched_part_no
         else:
             if not clean_q:
                 tz = pytz.timezone('Asia/Hebron')
@@ -552,6 +608,8 @@ def maintenance_copilot(query, input_image=None):
     inv_info = get_part_inventory_info(clean_q)
     if inv_info:
         qty_str = inv_info["qty"]
+        recorded_part_name = inv_info.get("name", "—")
+        recorded_code = inv_info.get("raw_code", clean_q)
         try:
             qty_num = float(re.sub(r'[^0-9.]', '', qty_str))
             status_badge = "🟢 متوفر ورصيد آمن" if qty_num > 2 else ("🟡 رصيد منخفض" if qty_num > 0 else "🔴 نافد من المستودع")
@@ -568,12 +626,47 @@ def maintenance_copilot(query, input_image=None):
         )
         response.append(stock_box)
 
+    # 3. محرك البحث في الكتالوجات
     hits, matched_term, hit_type = search_engine(clean_q, top_k=4)
     if not matched_warehouse_image and hit_type not in ["alarm", "trouble_table"]:
         matched_warehouse_image = find_image_for_part(matched_term if matched_term else clean_q)
 
-    # 3. تسجيل حركة البحث فورياً في سجل العمليات
-    log_search_query(clean_q, hit_type, matched_term, inv_info)
+    # تحديد اسم الماكينة واسم القطعة بناءً على نتائج البحث
+    if hit_type == "alarm":
+        recorded_code = matched_term if matched_term else clean_q
+        if hits:
+            recorded_machine_name = deduce_machine_from_filename(hits[0]['filename'])
+        else:
+            recorded_machine_name = "ماكينة التغليف أوتوماك (Automac)"
+        recorded_part_name = f"إنذار عطل تشغيلي ({recorded_code})"
+    elif hit_type == "trouble_table":
+        recorded_machine_name = matched_term
+        recorded_part_name = "جدول استكشاف وفحص الأعطال الشامل"
+    elif hit_type == "part":
+        recorded_code = matched_term if matched_term else clean_q
+        if hits:
+            recorded_machine_name = deduce_machine_from_filename(hits[0]['filename'])
+        if recorded_part_name == "—" and hits:
+            text = hits[0]['text'].replace("\r", " ")
+            idx = text.lower().find(recorded_code.lower())
+            if idx != -1:
+                snippet_name = text[idx:idx+70].split("\n")[0]
+                recorded_part_name = snippet_name.strip()
+    elif hit_type == "keyword":
+        recorded_machine_name = matched_term
+    else:
+        if hits:
+            recorded_machine_name = deduce_machine_from_filename(hits[0]['filename'])
+
+    # توثيق العملية فورياً في سجل الإكسل (CSV)
+    log_search_query(clean_q, hit_type, recorded_machine_name, recorded_part_name, recorded_code, inv_info)
+
+    # إضافة كادر معلومات الماكينة والقطعة أعلى التقرير
+    header_info = (
+        f"> ⚙️ **الماكينة المستهدفة:** `{recorded_machine_name}`  \n"
+        f"> 🏷️ **القطعة / العطل:** `{recorded_part_name}`  \n\n"
+    )
+    response.insert(0, header_info)
 
     # أ) إنذارات وتحذيرات ماكينات التغليف (E / W)
     if hit_type == "alarm" and matched_term:
@@ -651,16 +744,16 @@ def maintenance_copilot(query, input_image=None):
     timestamp = datetime.now(tz).strftime('%Y-%m-%d %I:%M %p')
     alert_msg = f"🔔 *إشعار صيانة وتشخيص - مسلخ عزيزا*\n"
     alert_msg += f"⏰ الوقت: {timestamp}\n"
+    alert_msg += f"🏭 الماكينة: {recorded_machine_name}\n"
+    alert_msg += f"🏷️ القطعة/العطل: {recorded_part_name}\n"
     alert_msg += f"🔍 الاستعلام: `{clean_q}`\n"
     if inv_info:
-        alert_msg += f"📦 رصيد المخزون المتوفر: {inv_info['qty']} (موقع: {inv_info['location']})\n"
+        alert_msg += f"📦 رصيد المستودع: {inv_info['qty']} (موقع: {inv_info['location']})\n"
     if hits:
         alert_msg += f"📖 المرجع: {hits[0]['filename']} (Pages: {', '.join(str(p['page']) for p in hits)})\n"
-    if matched_warehouse_image:
-        alert_msg += f"🖼️ الحالة: تم استخراج صورة الماكينة وجدول الأعطال كاملاً."
 
     send_whatsapp_alert(alert_msg)
-    response.append("\n---\n📲 تم إرسال إشعار فوري لطاقم الصيانة وتوثيق العملية في سجل إكسل.")
+    response.append("\n---\n📲 تم إرسال إشعار فوري لطاقم الصيانة وتوثيق الماكينة والقطعة في سجل إكسل.")
 
     return "\n".join(response), matched_warehouse_image, matched_catalog_page_img, LOG_FILE_PATH
 
@@ -680,13 +773,13 @@ HEADER_HTML = f"""
             </div>
             <div>
                 <h1 style="margin: 0; font-size: 23px; font-weight: 800; color: #ffffff;">شركة دواجن فلسطين - مسلخ عزيزا</h1>
-                <p style="margin: 4px 0 0 0; font-size: 14px; color: #e8f5e9;">نظام الصيانة والتشخيص الهندسي الذكي (سجل الأعطال التراكمي • مخزون المستودع المباشر)</p>
+                <p style="margin: 4px 0 0 0; font-size: 14px; color: #e8f5e9;">نظام الصيانة والتشخيص الهندسي الذكي (توثيق الماكينات والأعطال • مخزون المستودع المباشر)</p>
             </div>
         </div>
         <div style="border-right: 2px solid rgba(255,255,255,0.25); padding-right: 20px;">
             <span style="font-size: 12px; color: #c8e6c9; display: block;">إعداد وتطوير النظام:</span>
             <span style="font-size: 16px; font-weight: bold; color: #ffeb3b;">م. فادي محمود</span>
-            <span style="font-size: 12px; color: #e8f5e9; display: block;">مسؤول قسم الصيانة </span>
+            <span style="font-size: 12px; color: #e8f5e9; display: block;">مسؤول قسم الصيانة والأتمتة</span>
         </div>
     </div>
 </div>
@@ -706,12 +799,11 @@ with gr.Blocks(title="منصة الصيانة الهندسية الذكية - م
                 lines=2
             )
             image_input = gr.Image(type="pil", label="أو ارفع صورة القطعة للتعرف البصري عليها ومطابقتها")
-            submit_btn = gr.Button("تشخيص العطل وتوثيق العملية في السجل 🔍", variant="primary")
+            submit_btn = gr.Button("تشخيص العطل وتوثيق الماكينة والقطعة في السجل 🔍", variant="primary")
             clear_btn = gr.Button("مسح الحقول")
             
-            # زر وزاوية تحميل سجل عمليات البحث بصيغة إكسل للفريق الإداري ولجنة التحكيم
             download_log_file = gr.File(
-                label="📊 تحميل سجل عمليات البحث والأعطال (Excel / CSV)",
+                label="📊 تحميل سجل الأعطال والماكينات (Excel / CSV)",
                 interactive=False
             )
             
