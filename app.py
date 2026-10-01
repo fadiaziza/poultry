@@ -22,7 +22,10 @@ BUCKET_NAME = "aziza-manuals-storage"
 BASE_DIR = "/tmp/Maintenance_Manuals"
 IMAGE_DIR = os.path.join(BASE_DIR, "Real_Parts_Images")
 
-# رابط استعلام جدول Google Sheets المباشر والمستقر
+# مسار ملف سجل عمليات البحث (Excel / CSV)
+LOG_FILE_PATH = "/tmp/maintenance_search_log.csv"
+
+# رابط استعلام جدول Google Sheets المباشر والمستقر للمخزون
 SHEET_ID = "1_scf-CUSouwQvJan4d12UuC7LX8eHC7E4YAjC41q2r4"
 GOOGLE_SHEET_CSV_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv"
 
@@ -80,7 +83,40 @@ def send_whatsapp_alert(message):
         print(f"[!] WhatsApp notification error: {err}")
 
 # ==========================================
-# 2. محرك مخزون قطع الغيار من Google Sheets
+# 2. محرك تسجيل وتوثيق عمليات البحث (Search Logger)
+# ==========================================
+def log_search_query(query, hit_type, matched_term, stock_info):
+    """تسجيل تفاصيل العملية في ملف السجل الميداني لحساب تكرار الأعطال"""
+    tz = pytz.timezone('Asia/Hebron')
+    timestamp = datetime.now(tz).strftime('%Y-%m-%d %I:%M:%S %p')
+    
+    file_exists = os.path.exists(LOG_FILE_PATH)
+    try:
+        with open(LOG_FILE_PATH, mode='a', newline='', encoding='utf-8-sig') as f:
+            writer = csv.writer(f)
+            if not file_exists:
+                writer.writerow([
+                    "Timestamp", "Searched_Query", "Hit_Type", 
+                    "Matched_Entity", "Stock_Available", "Warehouse_Location"
+                ])
+            
+            qty = stock_info.get("qty", "N/A") if stock_info else "N/A"
+            loc = stock_info.get("location", "N/A") if stock_info else "N/A"
+            
+            writer.writerow([
+                timestamp,
+                query,
+                hit_type if hit_type else "General Search",
+                matched_term if matched_term else "N/A",
+                qty,
+                loc
+            ])
+            print(f"[✓] Query logged successfully: {query}")
+    except Exception as e:
+        print(f"[!] Error writing search log: {e}")
+
+# ==========================================
+# 3. محرك مخزون قطع الغيار من Google Sheets
 # ==========================================
 inventory_cache = {
     "data": {},
@@ -93,17 +129,13 @@ def clean_part_key(key_text):
     return re.sub(r'[^a-zA-Z0-9]', '', str(key_text)).lower()
 
 def fetch_inventory_data():
-    """قراءة بيانات المخزون من Google Sheets مع كاش سريع لتحديث البيانات فورياً"""
     current_time = time.time()
     if inventory_cache["data"] and (current_time - inventory_cache["last_sync"] < 30):
         return inventory_cache["data"]
 
     try:
-        headers_req = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
-        }
+        headers_req = {'User-Agent': 'Mozilla/5.0'}
         res = requests.get(GOOGLE_SHEET_CSV_URL, headers=headers_req, timeout=10, allow_redirects=True)
-        
         if res.status_code == 200:
             lines = res.text.splitlines()
             reader = csv.reader(lines)
@@ -135,8 +167,6 @@ def fetch_inventory_data():
                 inventory_cache["data"] = data_map
                 inventory_cache["last_sync"] = current_time
                 print(f"[✓] Google Sheet Connected: {len(data_map)} items loaded.")
-        else:
-            print(f"[!] HTTP Error fetching Google Sheet: {res.status_code}")
     except Exception as e:
         print(f"[!] Error fetching Google Sheet: {e}")
 
@@ -148,12 +178,9 @@ def get_part_inventory_info(part_query):
         return None
 
     clean_target = clean_part_key(part_query)
-    
-    # 1. تطابق كود مباشر
     if clean_target in inv_data:
         return inv_data[clean_target]
 
-    # 2. تطابق جزئي لأرقام القطع
     for k, info in inv_data.items():
         if len(clean_target) >= 6 and (clean_target in k or k in clean_target):
             return info
@@ -161,7 +188,7 @@ def get_part_inventory_info(part_query):
     return None
 
 # ==========================================
-# 3. فهرسة صفحات الكتالوجات وبصمات صور المستودع
+# 4. فهرسة صفحات الكتالوجات وبصمات صور المستودع
 # ==========================================
 manual_pages = []
 
@@ -231,7 +258,7 @@ for p in ["logo.png", "/app/logo.png"]:
             pass
 
 # ==========================================
-# 4. دوال استخراج ومعالجة الصور ودمج الصفحات
+# 5. دوال استخراج ومعالجة الصور ودمج الصفحات
 # ==========================================
 def render_pdf_page_to_image(filepath, page_num):
     try:
@@ -330,7 +357,7 @@ def find_image_for_part(query_text):
     return None
 
 # ==========================================
-# 5. محرك Gemini لاستخراج جميع الأعطال بالكامل
+# 6. محرك Gemini لاستخراج جميع الأعطال بالكامل
 # ==========================================
 def ask_gemini_engineer(user_query, context_text):
     if not ai_client or not context_text:
@@ -370,7 +397,7 @@ MANDATORY INSTRUCTIONS:
         return ""
 
 # ==========================================
-# 6. محرك البحث الذكي (متعدد الصفحات للأعطال)
+# 7. محرك البحث الذكي (متعدد الصفحات للأعطال)
 # ==========================================
 def search_engine(query, top_k=5):
     if not manual_pages:
@@ -449,7 +476,6 @@ def search_engine(query, top_k=5):
         if display_label == "Meyn Machine":
             display_label = f"ماكينة موديل {num_match.group(0)}"
 
-    # عند طلب جدول الأعطال أو الاستعلام عن ماكينة
     if is_trouble_intent or target_keys:
         candidates = []
         for p in manual_pages:
@@ -495,7 +521,7 @@ def search_engine(query, top_k=5):
     return [], None, None
 
 # ==========================================
-# 7. دالة المعالجة والتوجيه الرئيسية
+# 8. دالة المعالجة والتوجيه الرئيسية
 # ==========================================
 def maintenance_copilot(query, input_image=None):
     clean_q = query.strip() if query else ""
@@ -503,6 +529,7 @@ def maintenance_copilot(query, input_image=None):
     matched_catalog_page_img = None
     response = []
 
+    # 1. معالجة الصورة المرفوعة للقطعة
     if input_image is not None:
         matched_part_no, matched_img = match_uploaded_image(input_image)
         if matched_part_no:
@@ -516,12 +543,12 @@ def maintenance_copilot(query, input_image=None):
                 timestamp = datetime.now(tz).strftime('%Y-%m-%d %I:%M %p')
                 fail_msg = f"⚠️ *تنبيه فحص ميداني - مسلخ عزيزا*\n⏰ الوقت: {timestamp}\n📸 تم رفع صورة قطعة لم يتعرف عليها النظام تلقائياً، يرجى التحقق اليدوي."
                 send_whatsapp_alert(fail_msg)
-                return "❌ لم يتم العثور على صورة متطابقة بصرياً مع قطع المستودع المفهرسة. يرجى إدخال اسم الماكينة، كود الإنذار، أو رقم القطعة كتابةً.\n---\n📲 تم إرسال إشعار لطاقم الصيانة بالمتابعة.", None, None
+                return "❌ لم يتم العثور على صورة متطابقة بصرياً مع قطع المستودع المفهرسة. يرجى إدخال اسم الماكينة، كود الإنذار، أو رقم القطعة كتابةً.\n---\n📲 تم إرسال إشعار لطاقم الصيانة بالمتابعة.", None, None, None
 
     if not clean_q:
-        return "⚠️ يرجى إدخال اسم الماكينة بالعربي (مثل: السكالدر أو الفنت أو الفتح)، كود الإنذار (E002)، أو رقم القطعة.", None, None
+        return "⚠️ يرجى إدخال اسم الماكينة بالعربي (مثل: السكالدر أو الفنت أو الفتح)، كود الإنذار (E002)، أو رقم القطعة.", None, None, None
 
-    # فحص رصيد القطعة في مستودع المسلخ من Google Sheet
+    # 2. فحص رصيد القطعة في مستودع المسلخ من Google Sheet
     inv_info = get_part_inventory_info(clean_q)
     if inv_info:
         qty_str = inv_info["qty"]
@@ -545,7 +572,10 @@ def maintenance_copilot(query, input_image=None):
     if not matched_warehouse_image and hit_type not in ["alarm", "trouble_table"]:
         matched_warehouse_image = find_image_for_part(matched_term if matched_term else clean_q)
 
-    # 1. إنذارات وتحذيرات ماكينات التغليف (E / W)
+    # 3. تسجيل حركة البحث فورياً في سجل العمليات
+    log_search_query(clean_q, hit_type, matched_term, inv_info)
+
+    # أ) إنذارات وتحذيرات ماكينات التغليف (E / W)
     if hit_type == "alarm" and matched_term:
         prefix = matched_term[0]
         alarm_status = "CRITICAL ALARM (MACHINE STOPPED)" if prefix == "E" else "WARNING ALERT (PREVENTIVE)"
@@ -561,7 +591,7 @@ def maintenance_copilot(query, input_image=None):
         else:
             response.append(f"⚠️ No direct catalog page found for `{matched_term}` in current indexed manuals.")
 
-    # 2. جداول استكشاف الأعطال الشاملة (جميع المشاكل من كل الصفحات)
+    # ب) جداول استكشاف الأعطال الشاملة
     elif hit_type == "trouble_table":
         response.append(f"## 🛠️ {matched_term} - Complete Technical Troubleshooting Records\n")
         if hits:
@@ -583,7 +613,7 @@ def maintenance_copilot(query, input_image=None):
         else:
             response.append(f"⚠️ لم يتم العثور على صفحات جدول الأعطال الخاصة بـ `{matched_term}`.")
 
-    # 3. أرقام القطع والبحث العام
+    # ج) أرقام القطع والبحث العام
     else:
         if hits:
             ai_insight = ask_gemini_engineer(clean_q, hits[0]['text'])
@@ -630,12 +660,12 @@ def maintenance_copilot(query, input_image=None):
         alert_msg += f"🖼️ الحالة: تم استخراج صورة الماكينة وجدول الأعطال كاملاً."
 
     send_whatsapp_alert(alert_msg)
-    response.append("\n---\n📲 تم إرسال إشعار فوري لطاقم الصيانة عبر الواتساب.")
+    response.append("\n---\n📲 تم إرسال إشعار فوري لطاقم الصيانة وتوثيق العملية في سجل إكسل.")
 
-    return "\n".join(response), matched_warehouse_image, matched_catalog_page_img
+    return "\n".join(response), matched_warehouse_image, matched_catalog_page_img, LOG_FILE_PATH
 
 # ==========================================
-# 8. واجهة Gradio الرسمية
+# 9. واجهة Gradio الرسمية
 # ==========================================
 total_manuals = len(glob.glob(os.path.join(BASE_DIR, "**/*.pdf"), recursive=True))
 
@@ -650,13 +680,13 @@ HEADER_HTML = f"""
             </div>
             <div>
                 <h1 style="margin: 0; font-size: 23px; font-weight: 800; color: #ffffff;">شركة دواجن فلسطين - مسلخ عزيزا</h1>
-                <p style="margin: 4px 0 0 0; font-size: 14px; color: #e8f5e9;">نظام الصيانة والتشخيص الهندسي الذكي المدعوم بـ AI (خطوط Meyn • ماكينات التغليف Automac • منظومات التبريد)</p>
+                <p style="margin: 4px 0 0 0; font-size: 14px; color: #e8f5e9;">نظام الصيانة والتشخيص الهندسي الذكي (سجل الأعطال التراكمي • مخزون المستودع المباشر)</p>
             </div>
         </div>
         <div style="border-right: 2px solid rgba(255,255,255,0.25); padding-right: 20px;">
             <span style="font-size: 12px; color: #c8e6c9; display: block;">إعداد وتطوير النظام:</span>
             <span style="font-size: 16px; font-weight: bold; color: #ffeb3b;">م. فادي محمود</span>
-            <span style="font-size: 12px; color: #e8f5e9; display: block;">مسؤول قسم الصيانة والأتمتة</span>
+            <span style="font-size: 12px; color: #e8f5e9; display: block;">مسؤول قسم الصيانة </span>
         </div>
     </div>
 </div>
@@ -666,18 +696,24 @@ with gr.Blocks(title="منصة الصيانة الهندسية الذكية - م
     gr.HTML(HEADER_HTML)
     
     with gr.Row():
-        status_box = gr.Markdown(f"📊 **حالة النظام:** تم تجهيز وفهرسة `{total_manuals}` كتالوج فني، وربط مخزون المستودع الميداني عبر Google Sheets بنجاح.")
+        status_box = gr.Markdown(f"📊 **حالة النظام:** تم تجهيز وفهرسة `{total_manuals}` كتالوج فني، وربط مخزون المستودع مع نظام التوثيق التلقائي لسجل الأعطال.")
         
     with gr.Row():
         with gr.Column(scale=1):
             query_input = gr.Textbox(
                 label="أدخل استعلامك: اسم الماكينة بالعربي / كود الإنذار (E002) / رقم القطعة (4 مقاطع)",
-                placeholder="أمثلة: ما هي مشاكل السكالدر | مشاكل ماكينة الفتح | ماكينة الفنت | المايسترو | E002 | W010",
+                placeholder="أمثلة: ما هي مشاكل السكالدر | مشاكل ماكينة الفتح | ماكينة الفنت | المايسترو | E002 | W010 | 0587.0040.008.00",
                 lines=2
             )
             image_input = gr.Image(type="pil", label="أو ارفع صورة القطعة للتعرف البصري عليها ومطابقتها")
-            submit_btn = gr.Button("تشخيص العطل واستخراج كافة المشاكل والحلول 🔍", variant="primary")
+            submit_btn = gr.Button("تشخيص العطل وتوثيق العملية في السجل 🔍", variant="primary")
             clear_btn = gr.Button("مسح الحقول")
+            
+            # زر وزاوية تحميل سجل عمليات البحث بصيغة إكسل للفريق الإداري ولجنة التحكيم
+            download_log_file = gr.File(
+                label="📊 تحميل سجل عمليات البحث والأعطال (Excel / CSV)",
+                interactive=False
+            )
             
         with gr.Column(scale=1):
             output_box = gr.Markdown(label="تقرير الفحص الفني وجدول الأعطال والمخزون")
@@ -688,11 +724,11 @@ with gr.Blocks(title="منصة الصيانة الهندسية الذكية - م
     submit_btn.click(
         fn=maintenance_copilot,
         inputs=[query_input, image_input],
-        outputs=[output_box, matched_warehouse_img_output, matched_catalog_page_output]
+        outputs=[output_box, matched_warehouse_img_output, matched_catalog_page_output, download_log_file]
     )
     clear_btn.click(
-        lambda: ("", None, "", None, None),
-        outputs=[query_input, image_input, output_box, matched_warehouse_img_output, matched_catalog_page_output]
+        lambda: ("", None, "", None, None, None),
+        outputs=[query_input, image_input, output_box, matched_warehouse_img_output, matched_catalog_page_output, download_log_file]
     )
 
 if __name__ == "__main__":
