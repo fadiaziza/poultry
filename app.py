@@ -67,25 +67,24 @@ def sync_data_from_gcs():
     build_machine_catalog_groups()
 
 def build_machine_catalog_groups():
-    """تجميع الكتالوجات ذكياً بحيث يرتبط كتالوج الصيانة وكتالوج قطع الغيار لكل ماكينة معاً"""
+    """تجميع الكتالوجات ذكياً بحيث يرتبط كتالوج الصيانة وكتالوج قطع الغيار لكل ماكينة معاً بالمسميات المعتمدة"""
     global machine_catalogs_db, available_machines_list
     machine_catalogs_db = {}
     
     pdf_list = glob.glob(os.path.join(BASE_DIR, "**/*.pdf"), recursive=True)
     
-    # خريطة الماكينات الرئيسية للتعرف والتجميع
     machine_patterns = [
         ("ماكينة التفريغ مايسترو (Maestro Eviscerator 0600)", ["maestro", "eviscerat", "0600"]),
-        ("ماكينة قص المخرج الفنت (Vent Cutter 0100)", ["vent", "cutter", "0100"]),
+        ("ماكينة قص دجاج نهائي (Vent Cutter 0100)", ["vent", "cutter", "0100"]),
         ("ماكينة الفتح والمقص (Opening Machine 0450)", ["opening", "scissors", "0450"]),
-        ("حوض السمط (Scalder 0560 / 0990)", ["scalder", "scalding", "0560", "0990"]),
-        ("ماكينة نزع الريش (Plucker JM64 / 2470)", ["plucker", "picking", "jm64", "2470", "0770"]),
+        ("حوض السكالدر (Scalder 0560 / 0990)", ["scalder", "scalding", "0560", "0990"]),
+        ("ماكينة المعاطه (Plucker JM64 / 2470)", ["plucker", "picking", "jm64", "2470", "0770"]),
         ("ماكينة تنظيف القوانص (Gizzard Harvester CD-6000)", ["gizzard", "peeler", "cd-6000", "1860"]),
         ("ماكينة سحب الرؤوس (Head Puller 2920)", ["head puller", "2920"]),
         ("ماكينة قص الأرجل (Hock Cutter 3000)", ["hock", "leg cutter", "3000"]),
-        ("سير الشواكل والناقل المعلق (Overhead Conveyor 0230)", ["shackle", "overhead", "0230"]),
-        ("سير البانات لنقل الدواجن (Pan Conveyor Single)", ["pan conveyor", "pan single"]),
-        ("ماكينة التغليف أوتوماك (Automac 55 / 75 / 297)", ["automac", "wrapping", "297", "298", "fabbri"]),
+        ("الجنزير والعلاقات (Overhead Conveyor 0230)", ["shackle", "overhead", "0230"]),
+        ("خط نقل الكبدة (Pan Conveyor Single)", ["pan conveyor", "pan single", "pan"]),
+        ("ماكينة التغليف أوتوماك (Automac 55 / 75 / 297)", ["automac", "wrapping", "297", "298", "a55", "fabbri", "stretch"]),
         ("مضخات الفاكيوم وتفريغ الرئة (Vacuum Pumps)", ["vacuum", "lung", "robuschi", "2170", "0190"]),
         ("كمبرسورات ومنظومة التبريد المركزية", ["compressor", "airpol", "atlas", "refrigeration", "2410"])
     ]
@@ -94,7 +93,6 @@ def build_machine_catalog_groups():
         fname = os.path.basename(p)
         fname_lower = fname.lower()
         
-        # تصنيف نوع الكتالوج: هل هو قطع غيار أم صيانة وتشغيل
         is_parts = any(k in fname_lower for k in ["part", "parts", "spare", "component", "قطعة", "قطع"])
         
         assigned_group = None
@@ -104,7 +102,6 @@ def build_machine_catalog_groups():
                 break
                 
         if not assigned_group:
-            # استخراج اسم الماكينة من اسم الملف تلقائياً
             clean_name = os.path.splitext(fname)[0].replace("_", " ").replace("-", " ")
             clean_name = re.sub(r'\b(part|parts|maintenance|user|manual|catalog)\b', '', clean_name, flags=re.I).strip()
             assigned_group = f"ماكينة {clean_name}" if clean_name else "ماكينات عامة"
@@ -443,32 +440,32 @@ def find_image_for_part(query_text):
 
 def deduce_machine_from_filename(filename):
     f_lower = filename.lower()
-    if any(k in f_lower for k in ["automac", "297", "298", "wrapping", "fabbri"]):
-        return "ماكينة التغليف أوتوماك (Automac)"
+    if any(k in f_lower for k in ["automac", "297", "298", "wrapping", "fabbri", "stretch"]):
+        return "ماكينة التغليف أوتوماك (Automac 55 / 75 / 297)"
     elif any(k in f_lower for k in ["maestro", "eviscerat", "0600"]):
-        return "ماكينة التفريغ مايسترو (Maestro)"
+        return "ماكينة التفريغ مايسترو (Maestro Eviscerator 0600)"
     elif any(k in f_lower for k in ["opening", "scissors", "0450"]):
-        return "ماكينة الفتح والمقص (Opening Scissors)"
+        return "ماكينة الفتح والمقص (Opening Machine 0450)"
     elif any(k in f_lower for k in ["vent", "cutter", "0100"]):
-        return "ماكينة قص المخرج الفنت (Vent Cutter)"
+        return "ماكينة قص دجاج نهائي (Vent Cutter 0100)"
     elif any(k in f_lower for k in ["scalder", "scalding", "0560", "0990"]):
-        return "حوض السمط (Scalder)"
+        return "حوض السكالدر (Scalder 0560 / 0990)"
     elif any(k in f_lower for k in ["plucker", "picking", "jm64", "2470", "0770"]):
-        return "ماكينة نزع الريش (Plucker)"
+        return "ماكينة المعاطه (Plucker JM64 / 2470)"
     elif any(k in f_lower for k in ["gizzard", "peeler", "cd-6000", "1860"]):
-        return "ماكينة تنظيف القوانص (Gizzard Processor)"
+        return "ماكينة تنظيف القوانص (Gizzard Harvester CD-6000)"
     elif any(k in f_lower for k in ["shackle", "overhead", "0230"]):
-        return "سير الشواكل والتعليق (Overhead Conveyor)"
+        return "الجنزير والعلاقات (Overhead Conveyor 0230)"
     elif any(k in f_lower for k in ["pan conveyor", "pan"]):
-        return "سير البانات (Pan Conveyor Single)"
+        return "خط نقل الكبدة (Pan Conveyor Single)"
     elif any(k in f_lower for k in ["hock", "leg cutter", "3000"]):
-        return "ماكينة قص الأرجل (Hock / Leg Cutter)"
+        return "ماكينة قص الأرجل (Hock Cutter 3000)"
     elif any(k in f_lower for k in ["head puller", "2920"]):
-        return "ماكينة سحب الرؤوس (Head Puller)"
+        return "ماكينة سحب الرؤوس (Head Puller 2920)"
     elif any(k in f_lower for k in ["vacuum", "lung", "robuschi", "2170", "0190"]):
-        return "مضخات الفاكيوم والشفاطات (Vacuum Pump)"
+        return "مضخات الفاكيوم وتفريغ الرئة (Vacuum Pumps)"
     elif any(k in f_lower for k in ["compressor", "airpol", "atlas", "refrigeration"]):
-        return "منظومة التبريد والكمبرسورات"
+        return "كمبرسورات ومنظومة التبريد المركزية"
     else:
         clean_name = os.path.splitext(filename)[0].replace("_", " ").replace("-", " ")
         return f"ماكينة {clean_name}"
@@ -478,7 +475,6 @@ def find_linked_manuals_for_machine(machine_name):
     if machine_name in machine_catalogs_db:
         return machine_catalogs_db[machine_name]
     
-    # محاولة مطابقة تقريبية بالاسم
     m_clean = machine_name.lower()
     for group_k, data in machine_catalogs_db.items():
         if any(word in group_k.lower() for word in m_clean.split() if len(word) > 3):
@@ -527,7 +523,7 @@ MANDATORY INSTRUCTIONS:
         return ""
 
 # ==========================================
-# 7. محرك البحث الذكي (متعدد الصفحات للأعطال)
+# 7. محرك البحث الذكي (متعدد الصفحات للأعطال مع القاموس المحدث)
 # ==========================================
 def search_engine(query, top_k=5):
     if not manual_pages:
@@ -567,33 +563,70 @@ def search_engine(query, top_k=5):
             return matched[:top_k], full_code, "part"
         return [], full_code, "part"
 
-    # 3. خريطة ماكينات المجزر
+    # 3. قاموس الماكينات بالمسميات الميدانية الرسمية المعتمدة
     all_machines_map = {
+        # ماكينات التغليف (أولوية تمنع الالتباس مع الفنت)
+        "تغليف": {"name": "ماكينة التغليف أوتوماك (Automac 55 / 75 / 297)", "keys": ["automac", "wrapping", "297", "298", "a55", "fabbri", "stretch"]},
+        "أوتوماك": {"name": "ماكينة التغليف أوتوماك (Automac 55 / 75 / 297)", "keys": ["automac", "wrapping", "297", "298", "a55", "fabbri"]},
+        "اوتوماك": {"name": "ماكينة التغليف أوتوماك (Automac 55 / 75 / 297)", "keys": ["automac", "wrapping", "297", "298", "a55", "fabbri"]},
+        
+        # ماكينات التفريغ
         "مايسترو": {"name": "ماكينة التفريغ مايسترو (Maestro Eviscerator 0600)", "keys": ["maestro", "eviscerat", "0600"]},
         "تفريغ": {"name": "ماكينة التفريغ مايسترو (Maestro Eviscerator 0600)", "keys": ["maestro", "eviscerat", "0600", "unloader", "2360", "3860"]},
+        
+        # ماكينة قص دجاج نهائي
+        "فنت": {"name": "ماكينة قص دجاج نهائي (Vent Cutter 0100)", "keys": ["vent", "cutter", "0100"]},
+        "قص دجاج": {"name": "ماكينة قص دجاج نهائي (Vent Cutter 0100)", "keys": ["vent", "cutter", "0100"]},
+        "قص دجاج نهائي": {"name": "ماكينة قص دجاج نهائي (Vent Cutter 0100)", "keys": ["vent", "cutter", "0100"]},
+        "قص المخرج": {"name": "ماكينة قص دجاج نهائي (Vent Cutter 0100)", "keys": ["vent", "cutter", "0100"]},
+        
+        # ماكينة الفتح والمقص
         "فتح": {"name": "ماكينة الفتح والمقص (Opening Machine 0450)", "keys": ["opening", "scissors", "0450"]},
         "مقص": {"name": "ماكينة الفتح والمقص (Opening Machine 0450)", "keys": ["opening", "scissors", "0450"]},
-        "فنت": {"name": "ماكينة قص المخرج الفنت (Vent Cutter 0100)", "keys": ["vent", "cutter", "0100"]},
-        "رياشة": {"name": "ماكينة نزع الريش (Plucker JM64 / 2470)", "keys": ["plucker", "picking", "jm64", "2470", "0770"]},
-        "سمط": {"name": "حوض السمط (Scalder 0560 / 0990)", "keys": ["scalder", "scalding", "0560", "0990"]},
-        "سكالدر": {"name": "حوض السمط (Scalder 0560 / 0990)", "keys": ["scalder", "scalding", "0560", "0990"]},
+        
+        # حوض السكالدر
+        "سكالدر": {"name": "حوض السكالدر (Scalder 0560 / 0990)", "keys": ["scalder", "scalding", "0560", "0990"]},
+        "سمط": {"name": "حوض السكالدر (Scalder 0560 / 0990)", "keys": ["scalder", "scalding", "0560", "0990"]},
+        
+        # ماكينة المعاطة
+        "معاطه": {"name": "ماكينة المعاطه (Plucker JM64 / 2470)", "keys": ["plucker", "picking", "jm64", "2470", "0770"]},
+        "معاطة": {"name": "ماكينة المعاطه (Plucker JM64 / 2470)", "keys": ["plucker", "picking", "jm64", "2470", "0770"]},
+        "رياشه": {"name": "ماكينة المعاطه (Plucker JM64 / 2470)", "keys": ["plucker", "picking", "jm64", "2470", "0770"]},
+        "رياشة": {"name": "ماكينة المعاطه (Plucker JM64 / 2470)", "keys": ["plucker", "picking", "jm64", "2470", "0770"]},
+        
+        # ماكينة تنظيف القوانص
         "قوانص": {"name": "ماكينة تنظيف القوانص (Gizzard Harvester CD-6000)", "keys": ["gizzard", "peeler", "cd-6000", "1860"]},
-        "تعليق": {"name": "سير الشواكل والناقل المعلق (Overhead Conveyor 0230)", "keys": ["shackle", "overhead", "0230"]},
-        "شواكل": {"name": "سير الشواكل والناقل المعلق (Overhead Conveyor 0230)", "keys": ["shackle", "overhead", "0230"]},
+        
+        # الجنزير والعلاقات
+        "علاقات": {"name": "الجنزير والعلاقات (Overhead Conveyor 0230)", "keys": ["shackle", "overhead", "0230"]},
+        "جنزير": {"name": "الجنزير والعلاقات (Overhead Conveyor 0230)", "keys": ["shackle", "overhead", "0230"]},
+        "شواكل": {"name": "الجنزير والعلاقات (Overhead Conveyor 0230)", "keys": ["shackle", "overhead", "0230"]},
+        "تعليق": {"name": "الجنزير والعلاقات (Overhead Conveyor 0230)", "keys": ["shackle", "overhead", "0230"]},
+        
+        # خط نقل الكبدة
+        "نقل كبدة": {"name": "خط نقل الكبدة (Pan Conveyor Single)", "keys": ["pan conveyor", "pan single", "pan"]},
+        "نقل كبده": {"name": "خط نقل الكبدة (Pan Conveyor Single)", "keys": ["pan conveyor", "pan single", "pan"]},
+        "كبدة": {"name": "خط نقل الكبدة (Pan Conveyor Single)", "keys": ["pan conveyor", "pan single", "pan"]},
+        "كبده": {"name": "خط نقل الكبدة (Pan Conveyor Single)", "keys": ["pan conveyor", "pan single", "pan"]},
+        "بانات": {"name": "خط نقل الكبدة (Pan Conveyor Single)", "keys": ["pan conveyor", "pan single", "pan"]},
+        
+        # ماكينات الذبح والتقطيع
         "أرجل": {"name": "ماكينة قص الأرجل (Hock Cutter 3000)", "keys": ["leg cutter", "hock", "3000"]},
+        "ارجل": {"name": "ماكينة قص الأرجل (Hock Cutter 3000)", "keys": ["leg cutter", "hock", "3000"]},
         "رؤوس": {"name": "ماكينة سحب الرؤوس (Head Puller 2920)", "keys": ["head puller", "2920"]},
+        "روؤس": {"name": "ماكينة سحب الرؤوس (Head Puller 2920)", "keys": ["head puller", "2920"]},
+        
+        # الشفاطات والتبريد
         "شفاط": {"name": "مضخات الفاكيوم وتفريغ الرئة (Vacuum Pumps)", "keys": ["vacuum", "lung", "robuschi", "2170", "0190"]},
-        "تغليف": {"name": "ماكينة التغليف أوتوماك (Automac 55 / 75 / 297)", "keys": ["automac", "wrapping", "297", "298", "a55"]},
-        "تبريد": {"name": "كمبرسورات ومنظومة التبريد المركزية", "keys": ["compressor", "chiller", "refrigeration", "2410", "airpol", "atlas"]}
+        "فاكيوم": {"name": "مضخات الفاكيوم وتفريغ الرئة (Vacuum Pumps)", "keys": ["vacuum", "lung", "robuschi", "2170", "0190"]},
+        "تبريد": {"name": "كمبرسورات ومنظومة التبريد المركزية", "keys": ["compressor", "chiller", "refrigeration", "2410", "airpol", "atlas"]},
+        "كمبرسور": {"name": "كمبرسورات ومنظومة التبريد المركزية", "keys": ["compressor", "chiller", "refrigeration", "2410", "airpol", "atlas"]}
     }
 
-    is_trouble_intent = any(k in clean_q_lower for k in [
-        "عطل", "مشكل", "جدول", "فحص", "صيانة", "توقف", "trouble", "fault", "failure",
-        "meyn", "ماكينات", "حل", "سبب", "سحب"
-    ])
-
     target_keys = []
-    display_label = "Meyn Machine"
+    display_label = None
+
+    # مطابقة اسم الماكينة أولاً وبأعلى أولوية
     for ar_term, m_data in all_machines_map.items():
         if ar_term in clean_q_lower:
             target_keys = m_data["keys"]
@@ -601,20 +634,22 @@ def search_engine(query, top_k=5):
             break
 
     num_match = re.search(r'\b\d{4}\b', clean_q)
-    if num_match:
+    if num_match and not display_label:
         target_keys.append(num_match.group(0))
-        if display_label == "Meyn Machine":
-            display_label = f"ماكينة موديل {num_match.group(0)}"
+        display_label = f"ماكينة موديل {num_match.group(0)}"
 
-    if is_trouble_intent or target_keys:
+    # عند وجود ماكينة مستهدفة: حصر البحث داخل كتالوجاتها فقط
+    if target_keys:
         candidates = []
         for p in manual_pages:
             t = p["text"].lower()
+            fname = p["filename"].lower()
 
             if p["page"] <= 7 or "....." in t or ".... " in t:
                 continue
 
-            if target_keys and not any(k in p["filename"].lower() for k in target_keys):
+            # شرط حازم: الملف يجب أن ينتمي حصراً للماكينة المطلوبة
+            if not any(k in fname for k in target_keys):
                 continue
 
             score = 0
@@ -624,10 +659,10 @@ def search_engine(query, top_k=5):
                 score += 4
             if "solution" in t or "remedy" in t:
                 score += 3
-            if "machine doesn't" in t or "doesn't start" in t or "doesn't cut" in t:
+            if "machine doesn't" in t or "alarm" in t or "warning" in t:
                 score += 4
 
-            if score >= 5:
+            if score >= 3:
                 candidates.append((score, p))
 
         if candidates:
@@ -642,15 +677,13 @@ def search_engine(query, top_k=5):
             ]
             sequential_pages.sort(key=lambda x: x["page"])
             return sequential_pages, display_label, "trouble_table"
-
-    if target_keys:
-        fallback = [p for p in manual_pages if any(k in p["filename"].lower() for k in target_keys) and p["page"] > 5]
-        if fallback:
-            return fallback[:top_k], display_label, "keyword"
+        else:
+            matched_machine_pages = [p for p in manual_pages if any(k in p["filename"].lower() for k in target_keys) and p["page"] > 5]
+            if matched_machine_pages:
+                return matched_machine_pages[:top_k], display_label, "keyword"
 
     return [], None, None
 
-# دالة استعراض وتنزيل كتالوجات نفس الماكينة من التبويب المخصص
 def view_machine_paired_catalogs(machine_name):
     if not machine_name or machine_name not in machine_catalogs_db:
         return None, None, None, "⚠️ يرجى اختيار ماكينة من القائمة."
@@ -659,7 +692,6 @@ def view_machine_paired_catalogs(machine_name):
     maint_pdf = data.get("maintenance_manual")
     parts_pdf = data.get("parts_catalog")
 
-    # اختيار ملف لعرض الغلاف
     sample_file = maint_pdf or parts_pdf
     cover_img = render_machine_cover_image(sample_file) if sample_file else None
 
@@ -706,7 +738,7 @@ def maintenance_copilot(query, input_image=None):
                 return "❌ لم يتم العثور على صورة متطابقة بصرياً مع قطع المستودع المفهرسة. يرجى إدخال اسم الماكينة، كود الإنذار، أو رقم القطعة كتابةً.\n---\n📲 تم إرسال إشعار لطاقم الصيانة بالمتابعة.", None, None, None, None, None
 
     if not clean_q:
-        return "⚠️ يرجى إدخال اسم الماكينة بالعربي (مثل: السكالدر أو الفنت أو الفتح)، كود الإنذار (E002)، أو رقم القطعة.", None, None, None, None, None
+        return "⚠️ يرجى إدخال اسم الماكينة بالعربي (مثل: ماكينة التغليف، السكالدر، المعاطه، المايسترو)، كود الإنذار (E002)، أو رقم القطعة.", None, None, None, None, None
 
     # 2. فحص رصيد القطعة في مستودع المسلخ من Google Sheet
     inv_info = get_part_inventory_info(clean_q)
@@ -812,7 +844,7 @@ def maintenance_copilot(query, input_image=None):
             response.append(f"📖 **Technical Manual Reference:** `{hits[0]['filename']}` (Pages: {pages_str})")
             matched_catalog_page_img = render_troubleshooting_pages_stitched(hits[0]['filepath'], pages_numbers)
         else:
-            response.append(f"⚠️️ لم يتم العثور على صفحات جدول الأعطال الخاصة بـ `{matched_term}`.")
+            response.append(f"⚠️ لم يتم العثور على صفحات جدول الأعطال الخاصة بـ `{matched_term}`.")
 
     # ج) أرقام القطع والبحث العام
     else:
@@ -847,7 +879,7 @@ def maintenance_copilot(query, input_image=None):
     if matched_catalog_page_img:
         response.append("📖 **تم دمج وعرض صفحات جدول الأعطال الكاملة للتوثيق في المربع الأيمن.**")
 
-    # إشعار الواتساب التلقائي
+    # إشعار الواتساب التلقائي بالمسميات المعتمدة
     tz = pytz.timezone('Asia/Hebron')
     timestamp = datetime.now(tz).strftime('%Y-%m-%d %I:%M %p')
     alert_msg = f"🔔 *إشعار صيانة وتشخيص - مسلخ عزيزا*\n"
@@ -887,7 +919,7 @@ HEADER_HTML = f"""
         <div style="border-right: 2px solid rgba(255,255,255,0.25); padding-right: 20px;">
             <span style="font-size: 12px; color: #c8e6c9; display: block;">إعداد وتطوير النظام:</span>
             <span style="font-size: 16px; font-weight: bold; color: #ffeb3b;">م. فادي محمود</span>
-            <span style="font-size: 12px; color: #e8f5e9; display: block;">مسؤول قسم الصيانة </span>
+            <span style="font-size: 12px; color: #e8f5e9; display: block;">مسؤول قسم الصيانة والأتمتة</span>
         </div>
     </div>
 </div>
@@ -906,7 +938,7 @@ with gr.Blocks(title="منصة الصيانة الهندسية الذكية - م
                 with gr.Column(scale=1):
                     query_input = gr.Textbox(
                         label="أدخل استعلامك: اسم الماكينة بالعربي / كود الإنذار (E002) / رقم القطعة (4 مقاطع)",
-                        placeholder="أمثلة: ما هي مشاكل السكالدر | مشاكل ماكينة الفتح | ماكينة الفنت | المايسترو | E002 | W010 | 0587.0040.008.00",
+                        placeholder="أمثلة: ماكينة التغليف | حوض السكالدر | ماكينة المعاطه | خط نقل الكبدة | الجنزير والعلاقات | E002 | W010",
                         lines=2
                     )
                     image_input = gr.Image(type="pil", label="أو ارفع صورة القطعة للتعرف البصري عليها ومطابقتها")
@@ -965,7 +997,7 @@ with gr.Blocks(title="منصة الصيانة الهندسية الذكية - م
                 with gr.Column(scale=1):
                     machine_dropdown = gr.Dropdown(
                         choices=available_machines_list,
-                        label="اختر الماكينة لعرض كتالوج الصيانة وكتالوج قطع الغيار المرتبطين بها:",
+                        label="اختر الماكينة لعرض كتالوج الصيانة وكتالوج قطع الغيار المرتبطين بها بالمسميات الرسمية:",
                         value=available_machines_list[0] if available_machines_list else None
                     )
                     view_machine_btn = gr.Button("استعراض منظومة الكتالوجات المرتبطة 📖", variant="secondary")
