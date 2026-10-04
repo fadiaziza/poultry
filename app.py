@@ -10,7 +10,7 @@ import requests
 from datetime import datetime
 import pytz
 from collections import Counter
-from PIL import Image, ImageStat
+from PIL import Image
 import gradio as gr
 from google.cloud import storage
 from google import genai
@@ -134,10 +134,7 @@ sync_data_from_gcs()
 ID_INSTANCE = "710722737613"
 API_TOKEN_INSTANCE = "8902219901b2411cb1ebfa944bbfc3d7d499d671111c4fe18e"
 
-# رقم طاقم الصيانة العام لتنبيهات الأعطال اليومية
 ALERT_GROUP_ID = "970599431267@c.us"
-
-# رقم مسؤول المشتريات المعتمد (أحمد حطاب)
 PURCHASING_MANAGER_PHONE = "972595470033@c.us"
 
 def send_whatsapp_alert(message, target_phone=None):
@@ -303,13 +300,13 @@ def generate_kpi_dashboard_data():
             status_text = "🔴 نافد تماماً (Out of Stock)"
             display_choice = f"{item['raw_code']} | {item['name']} (رصيد: 0)"
             critical_parts_choices.append(display_choice)
-            critical_table_rows.append((item['raw_code'], item['name'], item['qty'], item['min_stock'], item['location'], status_text))
+            critical_table_rows.append((item['raw_code'], item['name'], item['qty'], item.get('min_stock', '2'), item['location'], status_text))
         elif qty <= min_stk:
             low_stock_count += 1
             status_text = "🟡 رصيد حرج (Below Minimum)"
             display_choice = f"{item['raw_code']} | {item['name']} (رصيد: {item['qty']})"
             critical_parts_choices.append(display_choice)
-            critical_table_rows.append((item['raw_code'], item['name'], item['qty'], item['min_stock'], item['location'], status_text))
+            critical_table_rows.append((item['raw_code'], item['name'], item['qty'], item.get('min_stock', '2'), item['location'], status_text))
         else:
             safe_stock_count += 1
 
@@ -390,7 +387,7 @@ def generate_kpi_dashboard_data():
 
 def send_instant_purchase_order(selected_part_entry):
     if not selected_part_entry:
-        return "⚠️️ يرجى اختيار قطعة من قائمة القطع الحرجة."
+        return "⚠️ يرجى اختيار قطعة من قائمة القطع الحرجة."
 
     raw_code = selected_part_entry.split("|")[0].strip()
     inv_info = get_part_inventory_info(raw_code)
@@ -401,7 +398,6 @@ def send_instant_purchase_order(selected_part_entry):
     tz = pytz.timezone('Asia/Hebron')
     timestamp = datetime.now(tz).strftime('%Y-%m-%d %I:%M %p')
 
-    # صياغة طلب الشراء الرسمي من م. فادي محمود إلى قسم المشتريات (أحمد حطاب)
     po_message = (
         f"📋 *طلب شراء وتوريد قطع غيار عاجل*\n"
         f"🏢 *شركة دواجن فلسطين - مسلخ عزيزا*\n"
@@ -462,6 +458,7 @@ image_signatures = {}
 
 def get_img_sig(img):
     img_gray = img.convert('L').resize((16, 16), Image.Resampling.BILINEAR)
+    # استخدام list(getdata) متوافق مع كافة نسخ Pillow
     pixels = list(img_gray.getdata())
     avg = sum(pixels) / len(pixels)
     return [1 if p > avg else 0 for p in pixels]
@@ -649,7 +646,7 @@ def extract_pm_checklist_for_machine(machine_name):
     maint_pdf = m_data.get("maintenance_manual") or (m_data["other_files"][0] if m_data.get("other_files") else None)
     
     if not maint_pdf or not os.path.exists(maint_pdf):
-        return None, f"⚠️️ لا يتوفر كتالوج صيانة مسجل لماكينة **{machine_name}**."
+        return None, f"⚠️ لا يتوفر كتالوج صيانة مسجل لماكينة **{machine_name}**."
 
     matched_pm_pages = []
     target_filename = os.path.basename(maint_pdf)
@@ -966,10 +963,10 @@ def maintenance_copilot(query, input_image=None):
                 timestamp = datetime.now(tz).strftime('%Y-%m-%d %I:%M %p')
                 fail_msg = f"⚠️ *تنبيه فحص ميداني - مسلخ عزيزا*\n⏰ الوقت: {timestamp}\n📸 تم رفع صورة قطعة لم يتعرف عليها النظام تلقائياً، يرجى التحقق اليدوي."
                 send_whatsapp_alert(fail_msg)
-                return "❌ لم يتم العثور على صورة متطابقة بصرياً مع قطع المستودع المفهرسة. يرجى إدخال اسم الماكينة، كود الإنذار، أو رقم القطعة كتابةً.\n---\n📲 تم إرسال إشعار لطاقم الصيانة بالمتابعة.", None, None, None, None, None, *generate_kpi_dashboard_data()
+                return "❌ لم يتم العثور على صورة متطابقة بصرياً مع قطع المستودع المفهرسة. يرجى إدخال اسم الماكينة، كود الإنذار، أو رقم القطعة كتابةً.\n---\n📲 تم إرسال إشعار لطاقم الصيانة بالمتابعة.", None, None, None, None, None
 
     if not clean_q:
-        return "⚠️ يرجى إدخال اسم الماكينة بالعربي (مثل: ماكينة التغليف، السكالدر، المعاطه، المايسترو)، كود الإنذار (E002)، أو رقم القطعة.", None, None, None, None, None, *generate_kpi_dashboard_data()
+        return "⚠️ يرجى إدخال اسم الماكينة بالعربي (مثل: ماكينة التغليف، السكالدر، المعاطه، المايسترو)، كود الإنذار (E002)، أو رقم القطعة.", None, None, None, None, None
 
     # 2. فحص رصيد القطعة في مستودع المسلخ من Google Sheet
     inv_info = get_part_inventory_info(clean_q)
@@ -1123,20 +1120,13 @@ def maintenance_copilot(query, input_image=None):
     send_whatsapp_alert(alert_msg)
     response.append("\n---\n📲 تم إرسال إشعار فوري لطاقم الصيانة وتوثيق الماكينة والقطعة في سجل إكسل.")
 
-    updated_kpi_cards, updated_top_m, updated_top_p, updated_crit_tbl, updated_crit_choices = generate_kpi_dashboard_data()
-
     return (
         "\n".join(response), 
         matched_warehouse_image, 
         matched_catalog_page_img, 
         LOG_FILE_PATH, 
         maint_pdf_to_download, 
-        parts_pdf_to_download, 
-        updated_kpi_cards, 
-        updated_top_m, 
-        updated_top_p, 
-        updated_crit_tbl, 
-        updated_crit_choices
+        parts_pdf_to_download
     )
 
 # ==========================================
@@ -1318,23 +1308,26 @@ with gr.Blocks(title="منصة الصيانة الهندسية الذكية - م
                 outputs=[download_machine_maint, download_machine_parts, machine_cover_output, machine_info_output]
             )
 
+    # ربط دالة البحث بزر التشخيص بنظافة تامة
     submit_btn.click(
         fn=maintenance_copilot,
         inputs=[query_input, image_input],
         outputs=[
             output_box, 
             matched_warehouse_img_output, 
-            matched_catalog_page_img, 
+            matched_catalog_page_output, 
             download_log_file, 
             download_searched_maint, 
-            download_searched_parts,
-            kpi_cards_html,
-            top_machines_table,
-            top_parts_table,
-            critical_stock_table,
-            critical_part_selector
+            download_searched_parts
         ]
     )
+    
+    # تحديث مؤشرات الأداء تلقائياً بعد كل عملية بحث
+    submit_btn.click(
+        fn=generate_kpi_dashboard_data,
+        outputs=[kpi_cards_html, top_machines_table, top_parts_table, critical_stock_table, critical_part_selector]
+    )
+
     clear_btn.click(
         lambda: ("", None, "", None, None, None, None, None),
         outputs=[
