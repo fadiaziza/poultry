@@ -9,6 +9,7 @@ import fitz  # PyMuPDF
 import requests
 from datetime import datetime
 import pytz
+from collections import Counter
 from PIL import Image, ImageStat
 import gradio as gr
 from google.cloud import storage
@@ -36,7 +37,6 @@ if GEMINI_API_KEY:
     except Exception as e:
         print(f"[!] Warning initializing Gemini API: {e}")
 
-# خريطة تجميع الكتالوجات حسب الماكينة
 machine_catalogs_db = {}
 available_machines_list = []
 
@@ -178,6 +178,7 @@ def log_search_query(raw_query, hit_type, machine_name, part_name, part_code, st
             type_labels = {
                 "alarm": "إنذار تشغيلي (Alarm/Fault)",
                 "trouble_table": "استكشاف أعطال (Troubleshooting)",
+                "pm_checklist": "صيانة دورية وقائية (Preventive Checklist)",
                 "part": "قطعة غيار (Spare Part)",
                 "keyword": "بحث عام (General Search)"
             }
@@ -270,7 +271,97 @@ def get_part_inventory_info(part_query):
     return None
 
 # ==========================================
-# 4. فهرسة صفحات الكتالوجات وبصمات صور المستودع
+# 4. محرك تحليلات ومؤشرات الأداء (KPI Analytics Engine)
+# ==========================================
+def generate_kpi_dashboard_data():
+    inv_data = fetch_inventory_data()
+    total_parts = len(inv_data)
+    
+    safe_stock_count = 0
+    low_stock_count = 0
+    out_of_stock_count = 0
+
+    for item in inv_data.values():
+        try:
+            qty = float(re.sub(r'[^0-9.]', '', str(item["qty"])))
+            if qty > 2:
+                safe_stock_count += 1
+            elif qty > 0:
+                low_stock_count += 1
+            else:
+                out_of_stock_count += 1
+        except Exception:
+            safe_stock_count += 1
+
+    total_ops = 0
+    machine_counter = Counter()
+    parts_counter = Counter()
+
+    if os.path.exists(LOG_FILE_PATH):
+        try:
+            with open(LOG_FILE_PATH, mode='r', encoding='utf-8-sig') as f:
+                reader = csv.reader(f)
+                rows = list(reader)
+                if len(rows) > 1:
+                    for r in rows[1:]:
+                        if len(r) >= 5:
+                            total_ops += 1
+                            m_name = r[3].strip()
+                            p_name = r[4].strip()
+                            if m_name and m_name not in ["ماكينات عامة / غير محدد", "غير محدد"]:
+                                machine_counter[m_name] += 1
+                            if p_name and p_name not in ["—", "غير مسجل", ""]:
+                                parts_counter[p_name] += 1
+        except Exception as e:
+            print(f"[!] Error reading logs for KPI: {e}")
+
+    top_machines = machine_counter.most_common(5)
+    top_parts = parts_counter.most_common(5)
+
+    top_m_md = "| # | اسم الماكينة | عدد مرات الفحص / الأعطال |\n| :-: | :--- | :-: |\n"
+    if top_machines:
+        for idx, (m, count) in enumerate(top_machines, 1):
+            top_m_md += f"| {idx} | **{m}** | `{count}` مرات |\n"
+    else:
+        top_m_md += "| 1 | *لا توجد عمليات مسجلة كافية بعد* | `0` |\n"
+
+    top_p_md = "| # | اسم القطعة المستعلام عنها | عدد مرات الطلب |\n| :-: | :--- | :-: |\n"
+    if top_parts:
+        for idx, (p, count) in enumerate(top_parts, 1):
+            top_p_md += f"| {idx} | **{p}** | `{count}` مرات |\n"
+    else:
+        top_p_md += "| 1 | *لا توجد استعلامات قطع مسجلة بعد* | `0` |\n"
+
+    total_manuals_indexed = len(glob.glob(os.path.join(BASE_DIR, "**/*.pdf"), recursive=True))
+
+    summary_cards_html = f"""
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 20px; direction: rtl;">
+    <div style="background: #ffffff; padding: 16px; border-radius: 12px; border: 2px solid #e0e0e0; box-shadow: 0 4px 6px rgba(0,0,0,0.05); text-align: center;">
+        <span style="font-size: 13px; color: #555; font-weight: bold; display: block;">📖 الكتالوجات المعتمدة</span>
+        <span style="font-size: 26px; font-weight: 900; color: #1b5e20;">{total_manuals_indexed}</span>
+        <span style="font-size: 11px; color: #888; display: block;">كتالوج تشغيل وقطع</span>
+    </div>
+    <div style="background: #ffffff; padding: 16px; border-radius: 12px; border: 2px solid #e0e0e0; box-shadow: 0 4px 6px rgba(0,0,0,0.05); text-align: center;">
+        <span style="font-size: 13px; color: #555; font-weight: bold; display: block;">📦 قطع الغيار الحية</span>
+        <span style="font-size: 26px; font-weight: 900; color: #0277bd;">{total_parts}</span>
+        <span style="font-size: 11px; color: #888; display: block;">مربوطة مع Google Sheet</span>
+    </div>
+    <div style="background: #ffffff; padding: 16px; border-radius: 12px; border: 2px solid #e0e0e0; box-shadow: 0 4px 6px rgba(0,0,0,0.05); text-align: center;">
+        <span style="font-size: 13px; color: #555; font-weight: bold; display: block;">🔍 إجمالي بلاغات الفحص</span>
+        <span style="font-size: 26px; font-weight: 900; color: #6a1b9a;">{total_ops}</span>
+        <span style="font-size: 11px; color: #888; display: block;">موثقة في سجل التدقيق</span>
+    </div>
+    <div style="background: #ffffff; padding: 16px; border-radius: 12px; border: 2px solid #e0e0e0; box-shadow: 0 4px 6px rgba(0,0,0,0.05); text-align: center;">
+        <span style="font-size: 13px; color: #555; font-weight: bold; display: block;">🟢 رصيد المخزون الآمن</span>
+        <span style="font-size: 26px; font-weight: 900; color: #2e7d32;">{safe_stock_count}</span>
+        <span style="font-size: 11px; color: #d32f2f; display: block;">🔴 نافد / حرج: {out_of_stock_count + low_stock_count}</span>
+    </div>
+</div>
+"""
+    return summary_cards_html, top_m_md, top_p_md
+
+# ==========================================
+# 5. فهرسة صفحات الكتالوجات وبصمات صور المستودع
 # ==========================================
 manual_pages = []
 
@@ -340,7 +431,7 @@ for p in ["logo.png", "/app/logo.png"]:
             pass
 
 # ==========================================
-# 5. دوال استخراج ومعالجة الصور ودمج الصفحات
+# 6. دوال استخراج ومعالجة الصور ودمج الصفحات
 # ==========================================
 def render_pdf_page_to_image(filepath, page_num):
     try:
@@ -471,19 +562,120 @@ def deduce_machine_from_filename(filename):
         return f"ماكينة {clean_name}"
 
 def find_linked_manuals_for_machine(machine_name):
-    """جلب كل من كتالوج الصيانة وكتالوج قطع الغيار لنفس الماكينة"""
     if machine_name in machine_catalogs_db:
         return machine_catalogs_db[machine_name]
-    
     m_clean = machine_name.lower()
     for group_k, data in machine_catalogs_db.items():
         if any(word in group_k.lower() for word in m_clean.split() if len(word) > 3):
             return data
-            
     return {"maintenance_manual": None, "parts_catalog": None, "other_files": []}
 
 # ==========================================
-# 6. محرك Gemini لاستخراج جميع الأعطال بالكامل
+# 7. محرك الصيانة الدورية وقوائم الفحص (PM Checklist Engine)
+# ==========================================
+def extract_pm_checklist_for_machine(machine_name):
+    """استخراج قائمة الفحص الدوري والصيانة الوقائية (Checklist) لماكينة معينة"""
+    if not machine_name or machine_name not in machine_catalogs_db:
+        return None, "⚠️ يرجى اختيار ماكينة صحيحة."
+    
+    m_data = machine_catalogs_db[machine_name]
+    maint_pdf = m_data.get("maintenance_manual") or (m_data["other_files"][0] if m_data.get("other_files") else None)
+    
+    if not maint_pdf or not os.path.exists(maint_pdf):
+        return None, f"⚠️ لا يتوفر كتالوج صيانة مسجل لماكينة **{machine_name}**."
+
+    # البحث عن صفحات الصيانة الدورية / جدول الفحص في ملف الماكينة
+    matched_pm_pages = []
+    target_filename = os.path.basename(maint_pdf)
+    
+    for p in manual_pages:
+        if p["filename"] == target_filename and p["page"] > 5:
+            t_low = p["text"].lower()
+            # فحص الكلمات الدالة على الصيانة الوقائية والتشحيم والفحص
+            score = 0
+            if "preventive maintenance" in t_low or "periodic maintenance" in t_low:
+                score += 5
+            if "maintenance schedule" in t_low or "inspection schedule" in t_low:
+                score += 5
+            if "lubrication" in t_low and ("daily" in t_low or "weekly" in t_low or "hours" in t_low):
+                score += 4
+            if "checklist" in t_low or "interval" in t_low:
+                score += 3
+            if "daily" in t_low and "weekly" in t_low and "monthly" in t_low:
+                score += 4
+
+            if score >= 4:
+                matched_pm_pages.append((score, p))
+
+    matched_pm_pages.sort(key=lambda x: x[0], reverse=True)
+    
+    if matched_pm_pages:
+        best_page = matched_pm_pages[0][1]
+        checklist_img = render_pdf_page_to_image(best_page["filepath"], best_page["page"])
+        
+        # استخراج جدول الفحص بالذكاء الاصطناعي
+        prompt = f"""
+ROLE:
+You are the Lead Reliability & Maintenance Engineer at Palestine Poultry Company ("Aziza Slaughterhouse").
+
+TASK:
+Extract the PREVENTIVE MAINTENANCE & PERIODIC INSPECTION CHECKLIST for equipment: "{machine_name}".
+
+MANUAL PAGE TEXT (Page {best_page['page']}):
+\"\"\"{best_page['text'][:10000]}\"\"\"
+
+MANDATORY INSTRUCTIONS:
+1. Extract ALL maintenance intervals into a clean, complete Markdown Table:
+   | Interval (الفترة الزمنية) | Inspection Point (نقطة الفحص) | Technical Procedure (الإجراء الفني المطلوب) | Standard / LOTO (المعيار والسلامة) |
+   | :--- | :--- | :--- | :--- |
+2. Group clearly by frequency: Daily (يومي), Weekly (أسبوعي), Monthly (شهري), and Periodic (ساعات التشغيل مثل 500h / 1000h).
+3. Be strictly technical, practical, and direct in Professional Arabic & English terms.
+"""
+        try:
+            res = ai_client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=prompt
+            )
+            checklist_text = res.text.strip()
+        except Exception as e:
+            checklist_text = f"⚠️️ حدث خطأ أثناء تحليل جدول الصيانة عبر AI: {e}"
+
+        final_md = f"""
+## 📋 جدول الصيانة الدورية والفحص الوقائي (PM Checklist)
+### 🏭 الماكينة: **{machine_name}**
+* 📖 **المرجع من الكتالوج:** `{target_filename}` (صفحة رقم {best_page['page']})
+
+{checklist_text}
+"""
+        return checklist_img, final_md
+    else:
+        # في حال عدم وجود جدول مسمى صراحة، توليد Checklist قياسي تخصصي حسب نوع الماكينة
+        first_img = render_machine_cover_image(maint_pdf)
+        prompt_fallback = f"""
+Generate an industrial Preventive Maintenance (PM) Checklist specifically tailored for the poultry processing equipment: "{machine_name}" at Palestine Poultry Company (Aziza Slaughterhouse).
+Include Daily, Weekly, and Monthly inspection tasks covering: Mechanical drives, Pneumatics (6 bar), Sensors/Alignment, Lubrication/Food-grade grease, and Lockout/Tagout (LOTO) safety measures.
+Format as an executive Markdown Table.
+"""
+        try:
+            res = ai_client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=prompt_fallback
+            )
+            checklist_text = res.text.strip()
+        except Exception:
+            checklist_text = "⚠️ تعذر توليد جدول الصيانة حالياً."
+
+        final_md = f"""
+## 📋 جدول الصيانة الدورية والفحص الوقائي المعتمد (PM Inspection Checklist)
+### 🏭 الماكينة: **{machine_name}**
+* 📖 **المرجع:** كتالوج الصيانة المعتمد للماكينة `{target_filename}`
+
+{checklist_text}
+"""
+        return first_img, final_md
+
+# ==========================================
+# 8. محرك Gemini لاستخراج جميع الأعطال بالكامل
 # ==========================================
 def ask_gemini_engineer(user_query, context_text):
     if not ai_client or not context_text:
@@ -523,7 +715,7 @@ MANDATORY INSTRUCTIONS:
         return ""
 
 # ==========================================
-# 7. محرك البحث الذكي (متعدد الصفحات للأعطال مع القاموس المحدث)
+# 9. محرك البحث الذكي (متعدد الصفحات للأعطال)
 # ==========================================
 def search_engine(query, top_k=5):
     if not manual_pages:
@@ -565,58 +757,37 @@ def search_engine(query, top_k=5):
 
     # 3. قاموس الماكينات بالمسميات الميدانية الرسمية المعتمدة
     all_machines_map = {
-        # ماكينات التغليف (أولوية تمنع الالتباس مع الفنت)
         "تغليف": {"name": "ماكينة التغليف أوتوماك (Automac 55 / 75 / 297)", "keys": ["automac", "wrapping", "297", "298", "a55", "fabbri", "stretch"]},
         "أوتوماك": {"name": "ماكينة التغليف أوتوماك (Automac 55 / 75 / 297)", "keys": ["automac", "wrapping", "297", "298", "a55", "fabbri"]},
         "اوتوماك": {"name": "ماكينة التغليف أوتوماك (Automac 55 / 75 / 297)", "keys": ["automac", "wrapping", "297", "298", "a55", "fabbri"]},
-        
-        # ماكينات التفريغ
         "مايسترو": {"name": "ماكينة التفريغ مايسترو (Maestro Eviscerator 0600)", "keys": ["maestro", "eviscerat", "0600"]},
         "تفريغ": {"name": "ماكينة التفريغ مايسترو (Maestro Eviscerator 0600)", "keys": ["maestro", "eviscerat", "0600", "unloader", "2360", "3860"]},
-        
-        # ماكينة قص دجاج نهائي
         "فنت": {"name": "ماكينة قص دجاج نهائي (Vent Cutter 0100)", "keys": ["vent", "cutter", "0100"]},
         "قص دجاج": {"name": "ماكينة قص دجاج نهائي (Vent Cutter 0100)", "keys": ["vent", "cutter", "0100"]},
         "قص دجاج نهائي": {"name": "ماكينة قص دجاج نهائي (Vent Cutter 0100)", "keys": ["vent", "cutter", "0100"]},
         "قص المخرج": {"name": "ماكينة قص دجاج نهائي (Vent Cutter 0100)", "keys": ["vent", "cutter", "0100"]},
-        
-        # ماكينة الفتح والمقص
         "فتح": {"name": "ماكينة الفتح والمقص (Opening Machine 0450)", "keys": ["opening", "scissors", "0450"]},
         "مقص": {"name": "ماكينة الفتح والمقص (Opening Machine 0450)", "keys": ["opening", "scissors", "0450"]},
-        
-        # حوض السكالدر
         "سكالدر": {"name": "حوض السكالدر (Scalder 0560 / 0990)", "keys": ["scalder", "scalding", "0560", "0990"]},
         "سمط": {"name": "حوض السكالدر (Scalder 0560 / 0990)", "keys": ["scalder", "scalding", "0560", "0990"]},
-        
-        # ماكينة المعاطة
         "معاطه": {"name": "ماكينة المعاطه (Plucker JM64 / 2470)", "keys": ["plucker", "picking", "jm64", "2470", "0770"]},
         "معاطة": {"name": "ماكينة المعاطه (Plucker JM64 / 2470)", "keys": ["plucker", "picking", "jm64", "2470", "0770"]},
         "رياشه": {"name": "ماكينة المعاطه (Plucker JM64 / 2470)", "keys": ["plucker", "picking", "jm64", "2470", "0770"]},
         "رياشة": {"name": "ماكينة المعاطه (Plucker JM64 / 2470)", "keys": ["plucker", "picking", "jm64", "2470", "0770"]},
-        
-        # ماكينة تنظيف القوانص
         "قوانص": {"name": "ماكينة تنظيف القوانص (Gizzard Harvester CD-6000)", "keys": ["gizzard", "peeler", "cd-6000", "1860"]},
-        
-        # الجنزير والعلاقات
         "علاقات": {"name": "الجنزير والعلاقات (Overhead Conveyor 0230)", "keys": ["shackle", "overhead", "0230"]},
         "جنزير": {"name": "الجنزير والعلاقات (Overhead Conveyor 0230)", "keys": ["shackle", "overhead", "0230"]},
         "شواكل": {"name": "الجنزير والعلاقات (Overhead Conveyor 0230)", "keys": ["shackle", "overhead", "0230"]},
         "تعليق": {"name": "الجنزير والعلاقات (Overhead Conveyor 0230)", "keys": ["shackle", "overhead", "0230"]},
-        
-        # خط نقل الكبدة
         "نقل كبدة": {"name": "خط نقل الكبدة (Pan Conveyor Single)", "keys": ["pan conveyor", "pan single", "pan"]},
         "نقل كبده": {"name": "خط نقل الكبدة (Pan Conveyor Single)", "keys": ["pan conveyor", "pan single", "pan"]},
         "كبدة": {"name": "خط نقل الكبدة (Pan Conveyor Single)", "keys": ["pan conveyor", "pan single", "pan"]},
         "كبده": {"name": "خط نقل الكبدة (Pan Conveyor Single)", "keys": ["pan conveyor", "pan single", "pan"]},
         "بانات": {"name": "خط نقل الكبدة (Pan Conveyor Single)", "keys": ["pan conveyor", "pan single", "pan"]},
-        
-        # ماكينات الذبح والتقطيع
         "أرجل": {"name": "ماكينة قص الأرجل (Hock Cutter 3000)", "keys": ["leg cutter", "hock", "3000"]},
         "ارجل": {"name": "ماكينة قص الأرجل (Hock Cutter 3000)", "keys": ["leg cutter", "hock", "3000"]},
         "رؤوس": {"name": "ماكينة سحب الرؤوس (Head Puller 2920)", "keys": ["head puller", "2920"]},
         "روؤس": {"name": "ماكينة سحب الرؤوس (Head Puller 2920)", "keys": ["head puller", "2920"]},
-        
-        # الشفاطات والتبريد
         "شفاط": {"name": "مضخات الفاكيوم وتفريغ الرئة (Vacuum Pumps)", "keys": ["vacuum", "lung", "robuschi", "2170", "0190"]},
         "فاكيوم": {"name": "مضخات الفاكيوم وتفريغ الرئة (Vacuum Pumps)", "keys": ["vacuum", "lung", "robuschi", "2170", "0190"]},
         "تبريد": {"name": "كمبرسورات ومنظومة التبريد المركزية", "keys": ["compressor", "chiller", "refrigeration", "2410", "airpol", "atlas"]},
@@ -626,7 +797,6 @@ def search_engine(query, top_k=5):
     target_keys = []
     display_label = None
 
-    # مطابقة اسم الماكينة أولاً وبأعلى أولوية
     for ar_term, m_data in all_machines_map.items():
         if ar_term in clean_q_lower:
             target_keys = m_data["keys"]
@@ -638,7 +808,6 @@ def search_engine(query, top_k=5):
         target_keys.append(num_match.group(0))
         display_label = f"ماكينة موديل {num_match.group(0)}"
 
-    # عند وجود ماكينة مستهدفة: حصر البحث داخل كتالوجاتها فقط
     if target_keys:
         candidates = []
         for p in manual_pages:
@@ -648,7 +817,6 @@ def search_engine(query, top_k=5):
             if p["page"] <= 7 or "....." in t or ".... " in t:
                 continue
 
-            # شرط حازم: الملف يجب أن ينتمي حصراً للماكينة المطلوبة
             if not any(k in fname for k in target_keys):
                 continue
 
@@ -708,7 +876,7 @@ def view_machine_paired_catalogs(machine_name):
     return maint_pdf, parts_pdf, cover_img, info_md
 
 # ==========================================
-# 8. دالة المعالجة والتوجيه الرئيسية
+# 10. دالة المعالجة والتوجيه الرئيسية
 # ==========================================
 def maintenance_copilot(query, input_image=None):
     clean_q = query.strip() if query else ""
@@ -738,7 +906,7 @@ def maintenance_copilot(query, input_image=None):
                 return "❌ لم يتم العثور على صورة متطابقة بصرياً مع قطع المستودع المفهرسة. يرجى إدخال اسم الماكينة، كود الإنذار، أو رقم القطعة كتابةً.\n---\n📲 تم إرسال إشعار لطاقم الصيانة بالمتابعة.", None, None, None, None, None
 
     if not clean_q:
-        return "⚠️ يرجى إدخال اسم الماكينة بالعربي (مثل: ماكينة التغليف، السكالدر، المعاطه، المايسترو)، كود الإنذار (E002)، أو رقم القطعة.", None, None, None, None, None
+        return "⚠️️ يرجى إدخال اسم الماكينة بالعربي (مثل: ماكينة التغليف، السكالدر، المعاطه، المايسترو)، كود الإنذار (E002)، أو رقم القطعة.", None, None, None, None, None
 
     # 2. فحص رصيد القطعة في مستودع المسلخ من Google Sheet
     inv_info = get_part_inventory_info(clean_q)
@@ -767,7 +935,6 @@ def maintenance_copilot(query, input_image=None):
     if not matched_warehouse_image and hit_type not in ["alarm", "trouble_table"]:
         matched_warehouse_image = find_image_for_part(matched_term if matched_term else clean_q)
 
-    # تحديد اسم الماكينة واسم القطعة بناءً على نتائج البحث
     if hit_type == "alarm":
         recorded_code = matched_term if matched_term else clean_q
         if hits:
@@ -794,12 +961,11 @@ def maintenance_copilot(query, input_image=None):
         if hits:
             recorded_machine_name = deduce_machine_from_filename(hits[0]['filename'])
 
-    # جلب الكتالوجين المرتبطين بهذه الماكينة
     linked_catalog_files = find_linked_manuals_for_machine(recorded_machine_name)
     maint_pdf_to_download = linked_catalog_files.get("maintenance_manual")
     parts_pdf_to_download = linked_catalog_files.get("parts_catalog")
 
-    # توثيق العملية فورياً في سجل الإكسل (CSV)
+    # توثيق العملية فورياً في سجل الإكسل
     log_search_query(clean_q, hit_type, recorded_machine_name, recorded_part_name, recorded_code, inv_info)
 
     header_info = (
@@ -898,7 +1064,7 @@ def maintenance_copilot(query, input_image=None):
     return "\n".join(response), matched_warehouse_image, matched_catalog_page_img, LOG_FILE_PATH, maint_pdf_to_download, parts_pdf_to_download
 
 # ==========================================
-# 9. واجهة Gradio الرسمية
+# 11. واجهة Gradio الرسمية مع لوحة الصيانة الدورية
 # ==========================================
 total_manuals = len(glob.glob(os.path.join(BASE_DIR, "**/*.pdf"), recursive=True))
 
@@ -913,7 +1079,7 @@ HEADER_HTML = f"""
             </div>
             <div>
                 <h1 style="margin: 0; font-size: 23px; font-weight: 800; color: #ffffff;">شركة دواجن فلسطين - مسلخ عزيزا</h1>
-                <p style="margin: 4px 0 0 0; font-size: 14px; color: #e8f5e9;">نظام الصيانة والتشخيص الهندسي الذكي (ربط كتالوجات الصيانة وقطع الغيار • مخزون المستودع المباشر)</p>
+                <p style="margin: 4px 0 0 0; font-size: 14px; color: #e8f5e9;">منصة الصيانة الهندسية الذكية (جداول الفحص الدوري Checklist • مؤشرات KPI • الكتالوج المزدوج)</p>
             </div>
         </div>
         <div style="border-right: 2px solid rgba(255,255,255,0.25); padding-right: 20px;">
@@ -929,7 +1095,7 @@ with gr.Blocks(title="منصة الصيانة الهندسية الذكية - م
     gr.HTML(HEADER_HTML)
     
     with gr.Row():
-        status_box = gr.Markdown(f"📊 **حالة النظام:** تم تجهيز وفهرسة `{total_manuals}` كتالوج فني، مع ربط ثنائي ذكي بين (كتالوجات الصيانة 🔧) و(كتالوجات قطع الغيار ⚙️) لكل ماكينة.")
+        status_box = gr.Markdown(f"📊 **حالة النظام:** تم تجهيز وفهرسة `{total_manuals}` كتالوج فني، وتفعيل لوحة الصيانة الدورية (Checklists) ومؤشرات الأداء اللحظية (KPIs).")
         
     with gr.Tabs():
         # التبويب الأول: البحث الذكي والتشخيص
@@ -991,7 +1157,58 @@ with gr.Blocks(title="منصة الصيانة الهندسية الذكية - م
                 ]
             )
 
-        # التبويب الثاني: مكتبة الماكينات المزدوجة (كتالوج الصيانة + كتالوج قطع الغيار)
+        # التبويب الثاني: لوحة الصيانة الدورية وقوائم الفحص (Checklists)
+        with gr.Tab("📋 لوحة الصيانة الدورية وقوائم الفحص (PM Checklists)"):
+            with gr.Row():
+                with gr.Column(scale=1):
+                    pm_machine_dropdown = gr.Dropdown(
+                        choices=available_machines_list,
+                        label="اختر الماكينة لعرض جدول الفحص الوقائي والتشحيم الدوري (Checklist):",
+                        value=available_machines_list[0] if available_machines_list else None
+                    )
+                    get_pm_btn = gr.Button("استخراج وتحديث جدول الصيانة الدورية 📋", variant="primary")
+                    pm_output_text = gr.Markdown()
+                with gr.Column(scale=1):
+                    pm_image_output = gr.Image(
+                        type="filepath",
+                        label="صفحة جدول الصيانة الدورية الأصلية من الكتالوج"
+                    )
+
+            get_pm_btn.click(
+                fn=extract_pm_checklist_for_machine,
+                inputs=[pm_machine_dropdown],
+                outputs=[pm_image_output, pm_output_text]
+            )
+            pm_machine_dropdown.change(
+                fn=extract_pm_checklist_for_machine,
+                inputs=[pm_machine_dropdown],
+                outputs=[pm_image_output, pm_output_text]
+            )
+
+        # التبويب الثالث: لوحة مؤشرات الأداء الحية (KPI Dashboard)
+        with gr.Tab("📈 لوحة مؤشرات الأداء الحية للقسم (KPI Dashboard)"):
+            with gr.Column():
+                refresh_kpi_btn = gr.Button("🔄 تحديث قراءات ومؤشرات الأداء اللحظية", variant="secondary")
+                kpi_cards_html = gr.HTML()
+                
+                with gr.Row():
+                    with gr.Column(scale=1):
+                        gr.Markdown("### 🚨 أعلى 5 ماكينات تسجيلاً للأعطال والفحوصات (Top Critical Assets):")
+                        top_machines_table = gr.Markdown()
+                    with gr.Column(scale=1):
+                        gr.Markdown("### ⚙️ أكثر 5 قطع غيار استعلاماً وطلباً (High-Demand Spare Parts):")
+                        top_parts_table = gr.Markdown()
+
+            demo.load(
+                fn=generate_kpi_dashboard_data,
+                outputs=[kpi_cards_html, top_machines_table, top_parts_table]
+            )
+            refresh_kpi_btn.click(
+                fn=generate_kpi_dashboard_data,
+                outputs=[kpi_cards_html, top_machines_table, top_parts_table]
+            )
+
+        # التبويب الرابع: مكتبة الماكينات المزدوجة (كتالوج الصيانة + كتالوج قطع الغيار)
         with gr.Tab("📚 مكتبة الماكينات (كتالوج الصيانة + قطع الغيار معاً)"):
             with gr.Row():
                 with gr.Column(scale=1):
