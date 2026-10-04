@@ -425,78 +425,7 @@ def send_instant_purchase_order(selected_part_entry):
     return f"✅ **تم إرسال طلب الشراء الرسمي بنجاح عبر الواتساب** إلى مسؤول المشتريات **أحمد حطاب** (+972595470033) من **م. فادي محمود** للقطعة: `{inv_info['raw_code']} - {inv_info['name']}`."
 
 # ==========================================
-# 5. فهرسة صفحات الكتالوجات وبصمات صور المستودع
-# ==========================================
-manual_pages = []
-
-def build_manual_index():
-    global manual_pages
-    manual_pages = []
-    pdf_files = glob.glob(os.path.join(BASE_DIR, "**/*.pdf"), recursive=True)
-    print(f"[*] Indexing {len(pdf_files)} PDF manuals...")
-    for pdf_path in pdf_files:
-        filename = os.path.basename(pdf_path)
-        try:
-            doc = fitz.open(pdf_path)
-            for page_num in range(len(doc)):
-                page_text = doc[page_num].get_text("text").strip()
-                if len(page_text) > 15:
-                    manual_pages.append({
-                        "filename": filename,
-                        "filepath": pdf_path,
-                        "page": page_num + 1,
-                        "text": page_text
-                    })
-        except Exception:
-            pass
-    print(f"[✓] Successfully indexed {len(manual_pages)} pages.")
-
-build_manual_index()
-
-part_images_map = {}
-image_signatures = {}
-
-def get_img_sig(img):
-    img_gray = img.convert('L').resize((16, 16), Image.Resampling.BILINEAR)
-    # استخدام list(getdata) متوافق مع كافة نسخ Pillow
-    pixels = list(img_gray.getdata())
-    avg = sum(pixels) / len(pixels)
-    return [1 if p > avg else 0 for p in pixels]
-
-def build_image_index():
-    global part_images_map, image_signatures
-    part_images_map = {}
-    image_signatures = {}
-    if not os.path.exists(IMAGE_DIR):
-        return
-    valid_exts = ('.jpg', '.jpeg', '.png', '.JPG', '.PNG')
-    for f in os.listdir(IMAGE_DIR):
-        if f.endswith(valid_exts):
-            part_no = os.path.splitext(f)[0]
-            clean_k = re.sub(r'[^a-zA-Z0-9]', '', part_no).lower()
-            img_path = os.path.join(IMAGE_DIR, f)
-            part_images_map[clean_k] = (part_no, img_path)
-            try:
-                with Image.open(img_path) as im:
-                    image_signatures[part_no] = (get_img_sig(im), img_path)
-            except Exception:
-                pass
-    print(f"[✓] Indexed {len(image_signatures)} part images for visual comparison.")
-
-build_image_index()
-
-logo_base64 = ""
-for p in ["logo.png", "/app/logo.png"]:
-    if os.path.exists(p):
-        try:
-            with open(p, "rb") as f:
-                logo_base64 = base64.b64encode(f.read()).decode("utf-8")
-            break
-        except Exception:
-            pass
-
-# ==========================================
-# 6. دوال استخراج ومعالجة الصور ودمج الصفحات
+# 5. دوال استخراج ومعالجة الصور ودمج الصفحات
 # ==========================================
 def render_pdf_page_to_image(filepath, page_num):
     try:
@@ -636,7 +565,7 @@ def find_linked_manuals_for_machine(machine_name):
     return {"maintenance_manual": None, "parts_catalog": None, "other_files": []}
 
 # ==========================================
-# 7. محرك الصيانة الدورية وقوائم الفحص (PM Checklist Engine)
+# 6. محرك الصيانة الدورية وقوائم الفحص (PM Checklist Engine)
 # ==========================================
 def extract_pm_checklist_for_machine(machine_name):
     if not machine_name or machine_name not in machine_catalogs_db:
@@ -735,7 +664,7 @@ Format as an executive Markdown Table.
         return first_img, final_md
 
 # ==========================================
-# 8. محرك Gemini لاستخراج جميع الأعطال بالكامل
+# 7. محرك Gemini لاستخراج جميع الأعطال بالكامل
 # ==========================================
 def ask_gemini_engineer(user_query, context_text):
     if not ai_client or not context_text:
@@ -775,7 +704,7 @@ MANDATORY INSTRUCTIONS:
         return ""
 
 # ==========================================
-# 9. محرك البحث الذكي (متعدد الصفحات للأعطال)
+# 8. محرك البحث الذكي (متعدد الصفحات للأعطال)
 # ==========================================
 def search_engine(query, top_k=5):
     if not manual_pages:
@@ -815,7 +744,6 @@ def search_engine(query, top_k=5):
             return matched[:top_k], full_code, "part"
         return [], full_code, "part"
 
-    # 3. قاموس الماكينات بالمسميات الميدانية الرسمية المعتمدة
     all_machines_map = {
         "تغليف": {"name": "ماكينة التغليف أوتوماك (Automac 55 / 75 / 297)", "keys": ["automac", "wrapping", "297", "298", "a55", "fabbri", "stretch"]},
         "أوتوماك": {"name": "ماكينة التغليف أوتوماك (Automac 55 / 75 / 297)", "keys": ["automac", "wrapping", "297", "298", "a55", "fabbri"]},
@@ -936,7 +864,7 @@ def view_machine_paired_catalogs(machine_name):
     return maint_pdf, parts_pdf, cover_img, info_md
 
 # ==========================================
-# 10. دالة المعالجة والتوجيه الرئيسية
+# 9. دالة المعالجة والتوجيه الرئيسية
 # ==========================================
 def maintenance_copilot(query, input_image=None):
     clean_q = query.strip() if query else ""
@@ -1025,7 +953,6 @@ def maintenance_copilot(query, input_image=None):
     maint_pdf_to_download = linked_catalog_files.get("maintenance_manual")
     parts_pdf_to_download = linked_catalog_files.get("parts_catalog")
 
-    # توثيق العملية فورياً في سجل الإكسل
     log_search_query(clean_q, hit_type, recorded_machine_name, recorded_part_name, recorded_code, inv_info)
 
     header_info = (
@@ -1130,7 +1057,7 @@ def maintenance_copilot(query, input_image=None):
     )
 
 # ==========================================
-# 11. واجهة Gradio الرسمية
+# 10. واجهة Gradio الرسمية
 # ==========================================
 total_manuals = len(glob.glob(os.path.join(BASE_DIR, "**/*.pdf"), recursive=True))
 
@@ -1161,7 +1088,7 @@ with gr.Blocks(title="منصة الصيانة الهندسية الذكية - م
     gr.HTML(HEADER_HTML)
     
     with gr.Row():
-        status_box = gr.Markdown(f"📊 **حالة النظام:** تم تجهيز وفهرسة `{total_manuals}` كتالوج فني، وتفعيل قرارات التوريد الاستباقية عبر الواتساب ومؤشرات الأداء اللحظية (KPIs).")
+        status_box = gr.Markdown(f"📊 **حالة النظام:** تم تجهيز وفهرسة `{total_manuals}` كتالوج فني، وتفعيل قرارات التوريد الاستباقية ومؤشرات الأداء اللحظية (KPIs).")
         
     with gr.Tabs():
         # التبويب الأول: البحث الذكي والتشخيص
@@ -1308,7 +1235,7 @@ with gr.Blocks(title="منصة الصيانة الهندسية الذكية - م
                 outputs=[download_machine_maint, download_machine_parts, machine_cover_output, machine_info_output]
             )
 
-    # ربط دالة البحث بزر التشخيص بنظافة تامة
+    # ربط زر التشخيص: 6 مدخلات ومخرجات متطابقة تماماً
     submit_btn.click(
         fn=maintenance_copilot,
         inputs=[query_input, image_input],
@@ -1321,13 +1248,14 @@ with gr.Blocks(title="منصة الصيانة الهندسية الذكية - م
             download_searched_parts
         ]
     )
-    
-    # تحديث مؤشرات الأداء تلقائياً بعد كل عملية بحث
+
+    # تحديث لوحة المؤشرات تلقائياً عند إجراء أي بحث
     submit_btn.click(
         fn=generate_kpi_dashboard_data,
         outputs=[kpi_cards_html, top_machines_table, top_parts_table, critical_stock_table, critical_part_selector]
     )
 
+    # زر المسح: 8 عناصر إدخال وإخراج متطابقة بدقة تامة 1:1 تمنع أي انهيار
     clear_btn.click(
         lambda: ("", None, "", None, None, None, None, None),
         outputs=[
