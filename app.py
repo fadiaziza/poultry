@@ -67,7 +67,6 @@ def sync_data_from_gcs():
     build_machine_catalog_groups()
 
 def build_machine_catalog_groups():
-    """تجميع الكتالوجات ذكياً بحيث يرتبط كتالوج الصيانة وكتالوج قطع الغيار لكل ماكينة معاً بالمسميات المعتمدة"""
     global machine_catalogs_db, available_machines_list
     machine_catalogs_db = {}
     
@@ -274,6 +273,7 @@ def get_part_inventory_info(part_query):
 # 4. محرك تحليلات ومؤشرات الأداء (KPI Analytics Engine)
 # ==========================================
 def generate_kpi_dashboard_data():
+    """حساب مؤشرات الأداء الحية للقسم من واقع سجل الأعطال والمخزون الميداني مع قراءة فورية"""
     inv_data = fetch_inventory_data()
     total_parts = len(inv_data)
     
@@ -574,7 +574,6 @@ def find_linked_manuals_for_machine(machine_name):
 # 7. محرك الصيانة الدورية وقوائم الفحص (PM Checklist Engine)
 # ==========================================
 def extract_pm_checklist_for_machine(machine_name):
-    """استخراج قائمة الفحص الدوري والصيانة الوقائية (Checklist) لماكينة معينة"""
     if not machine_name or machine_name not in machine_catalogs_db:
         return None, "⚠️ يرجى اختيار ماكينة صحيحة."
     
@@ -584,14 +583,12 @@ def extract_pm_checklist_for_machine(machine_name):
     if not maint_pdf or not os.path.exists(maint_pdf):
         return None, f"⚠️ لا يتوفر كتالوج صيانة مسجل لماكينة **{machine_name}**."
 
-    # البحث عن صفحات الصيانة الدورية / جدول الفحص في ملف الماكينة
     matched_pm_pages = []
     target_filename = os.path.basename(maint_pdf)
     
     for p in manual_pages:
         if p["filename"] == target_filename and p["page"] > 5:
             t_low = p["text"].lower()
-            # فحص الكلمات الدالة على الصيانة الوقائية والتشحيم والفحص
             score = 0
             if "preventive maintenance" in t_low or "periodic maintenance" in t_low:
                 score += 5
@@ -613,7 +610,6 @@ def extract_pm_checklist_for_machine(machine_name):
         best_page = matched_pm_pages[0][1]
         checklist_img = render_pdf_page_to_image(best_page["filepath"], best_page["page"])
         
-        # استخراج جدول الفحص بالذكاء الاصطناعي
         prompt = f"""
 ROLE:
 You are the Lead Reliability & Maintenance Engineer at Palestine Poultry Company ("Aziza Slaughterhouse").
@@ -638,7 +634,7 @@ MANDATORY INSTRUCTIONS:
             )
             checklist_text = res.text.strip()
         except Exception as e:
-            checklist_text = f"⚠️️ حدث خطأ أثناء تحليل جدول الصيانة عبر AI: {e}"
+            checklist_text = f"⚠️ حدث خطأ أثناء تحليل جدول الصيانة عبر AI: {e}"
 
         final_md = f"""
 ## 📋 جدول الصيانة الدورية والفحص الوقائي (PM Checklist)
@@ -649,7 +645,6 @@ MANDATORY INSTRUCTIONS:
 """
         return checklist_img, final_md
     else:
-        # في حال عدم وجود جدول مسمى صراحة، توليد Checklist قياسي تخصصي حسب نوع الماكينة
         first_img = render_machine_cover_image(maint_pdf)
         prompt_fallback = f"""
 Generate an industrial Preventive Maintenance (PM) Checklist specifically tailored for the poultry processing equipment: "{machine_name}" at Palestine Poultry Company (Aziza Slaughterhouse).
@@ -903,10 +898,10 @@ def maintenance_copilot(query, input_image=None):
                 timestamp = datetime.now(tz).strftime('%Y-%m-%d %I:%M %p')
                 fail_msg = f"⚠️ *تنبيه فحص ميداني - مسلخ عزيزا*\n⏰ الوقت: {timestamp}\n📸 تم رفع صورة قطعة لم يتعرف عليها النظام تلقائياً، يرجى التحقق اليدوي."
                 send_whatsapp_alert(fail_msg)
-                return "❌ لم يتم العثور على صورة متطابقة بصرياً مع قطع المستودع المفهرسة. يرجى إدخال اسم الماكينة، كود الإنذار، أو رقم القطعة كتابةً.\n---\n📲 تم إرسال إشعار لطاقم الصيانة بالمتابعة.", None, None, None, None, None
+                return "❌ لم يتم العثور على صورة متطابقة بصرياً مع قطع المستودع المفهرسة. يرجى إدخال اسم الماكينة، كود الإنذار، أو رقم القطعة كتابةً.\n---\n📲 تم إرسال إشعار لطاقم الصيانة بالمتابعة.", None, None, None, None, None, *generate_kpi_dashboard_data()
 
     if not clean_q:
-        return "⚠️️ يرجى إدخال اسم الماكينة بالعربي (مثل: ماكينة التغليف، السكالدر، المعاطه، المايسترو)، كود الإنذار (E002)، أو رقم القطعة.", None, None, None, None, None
+        return "⚠️ يرجى إدخال اسم الماكينة بالعربي (مثل: ماكينة التغليف، السكالدر، المعاطه، المايسترو)، كود الإنذار (E002)، أو رقم القطعة.", None, None, None, None, None, *generate_kpi_dashboard_data()
 
     # 2. فحص رصيد القطعة في مستودع المسلخ من Google Sheet
     inv_info = get_part_inventory_info(clean_q)
@@ -969,7 +964,7 @@ def maintenance_copilot(query, input_image=None):
     log_search_query(clean_q, hit_type, recorded_machine_name, recorded_part_name, recorded_code, inv_info)
 
     header_info = (
-        f"> ⚙️ **الماكينة المستهدفة:** `{recorded_machine_name}`  \n"
+        f"> ⚙️️ **الماكينة المستهدفة:** `{recorded_machine_name}`  \n"
         f"> 🏷️ **القطعة / العطل:** `{recorded_part_name}`  \n\n"
     )
     response.insert(0, header_info)
@@ -1045,7 +1040,6 @@ def maintenance_copilot(query, input_image=None):
     if matched_catalog_page_img:
         response.append("📖 **تم دمج وعرض صفحات جدول الأعطال الكاملة للتوثيق في المربع الأيمن.**")
 
-    # إشعار الواتساب التلقائي بالمسميات المعتمدة
     tz = pytz.timezone('Asia/Hebron')
     timestamp = datetime.now(tz).strftime('%Y-%m-%d %I:%M %p')
     alert_msg = f"🔔 *إشعار صيانة وتشخيص - مسلخ عزيزا*\n"
@@ -1061,10 +1055,13 @@ def maintenance_copilot(query, input_image=None):
     send_whatsapp_alert(alert_msg)
     response.append("\n---\n📲 تم إرسال إشعار فوري لطاقم الصيانة وتوثيق الماكينة والقطعة في سجل إكسل.")
 
-    return "\n".join(response), matched_warehouse_image, matched_catalog_page_img, LOG_FILE_PATH, maint_pdf_to_download, parts_pdf_to_download
+    # توليد وتحديث بيانات مؤشرات الأداء الحية فوراً مع إتمام البحث
+    updated_kpi_cards, updated_top_m, updated_top_p = generate_kpi_dashboard_data()
+
+    return "\n".join(response), matched_warehouse_image, matched_catalog_page_img, LOG_FILE_PATH, maint_pdf_to_download, parts_pdf_to_download, updated_kpi_cards, updated_top_m, updated_top_p
 
 # ==========================================
-# 11. واجهة Gradio الرسمية مع لوحة الصيانة الدورية
+# 11. واجهة Gradio الرسمية مع التحديث اللحظي للـ KPI
 # ==========================================
 total_manuals = len(glob.glob(os.path.join(BASE_DIR, "**/*.pdf"), recursive=True))
 
@@ -1130,32 +1127,6 @@ with gr.Blocks(title="منصة الصيانة الهندسية الذكية - م
                     with gr.Row():
                         matched_warehouse_img_output = gr.Image(type="filepath", label="صورة الماكينة الكاملة / قطعة المستودع")
                         matched_catalog_page_output = gr.Image(type="filepath", label="صفحات جدول الأعطال الكاملة (مدمجة)")
-                    
-            submit_btn.click(
-                fn=maintenance_copilot,
-                inputs=[query_input, image_input],
-                outputs=[
-                    output_box, 
-                    matched_warehouse_img_output, 
-                    matched_catalog_page_output, 
-                    download_log_file, 
-                    download_searched_maint, 
-                    download_searched_parts
-                ]
-            )
-            clear_btn.click(
-                lambda: ("", None, "", None, None, None, None, None),
-                outputs=[
-                    query_input, 
-                    image_input, 
-                    output_box, 
-                    matched_warehouse_img_output, 
-                    matched_catalog_page_output, 
-                    download_log_file, 
-                    download_searched_maint, 
-                    download_searched_parts
-                ]
-            )
 
         # التبويب الثاني: لوحة الصيانة الدورية وقوائم الفحص (Checklists)
         with gr.Tab("📋 لوحة الصيانة الدورية وقوائم الفحص (PM Checklists)"):
@@ -1186,7 +1157,7 @@ with gr.Blocks(title="منصة الصيانة الهندسية الذكية - م
             )
 
         # التبويب الثالث: لوحة مؤشرات الأداء الحية (KPI Dashboard)
-        with gr.Tab("📈 لوحة مؤشرات الأداء الحية للقسم (KPI Dashboard)"):
+        with gr.Tab("📈 لوحة مؤشرات الأداء الحية للقسم (KPI Dashboard)") as kpi_tab:
             with gr.Column():
                 refresh_kpi_btn = gr.Button("🔄 تحديث قراءات ومؤشرات الأداء اللحظية", variant="secondary")
                 kpi_cards_html = gr.HTML()
@@ -1199,10 +1170,17 @@ with gr.Blocks(title="منصة الصيانة الهندسية الذكية - م
                         gr.Markdown("### ⚙️ أكثر 5 قطع غيار استعلاماً وطلباً (High-Demand Spare Parts):")
                         top_parts_table = gr.Markdown()
 
+            # 1. تحديث المؤشرات عند تحميل الصفحة
             demo.load(
                 fn=generate_kpi_dashboard_data,
                 outputs=[kpi_cards_html, top_machines_table, top_parts_table]
             )
+            # 2. تحديث المؤشرات تلقائياً بمجرد النقر على تبويب المؤشرات
+            kpi_tab.select(
+                fn=generate_kpi_dashboard_data,
+                outputs=[kpi_cards_html, top_machines_table, top_parts_table]
+            )
+            # 3. تحديث المؤشرات عبر الزر اليدوي
             refresh_kpi_btn.click(
                 fn=generate_kpi_dashboard_data,
                 outputs=[kpi_cards_html, top_machines_table, top_parts_table]
@@ -1244,6 +1222,36 @@ with gr.Blocks(title="منصة الصيانة الهندسية الذكية - م
                 inputs=[machine_dropdown],
                 outputs=[download_machine_maint, download_machine_parts, machine_cover_output, machine_info_output]
             )
+
+    # ربط عملية البحث بتحديث لوحة الـ KPI فورياً مع مخرجات التقرير
+    submit_btn.click(
+        fn=maintenance_copilot,
+        inputs=[query_input, image_input],
+        outputs=[
+            output_box, 
+            matched_warehouse_img_output, 
+            matched_catalog_page_output, 
+            download_log_file, 
+            download_searched_maint, 
+            download_searched_parts,
+            kpi_cards_html,
+            top_machines_table,
+            top_parts_table
+        ]
+    )
+    clear_btn.click(
+        lambda: ("", None, "", None, None, None, None, None),
+        outputs=[
+            query_input, 
+            image_input, 
+            output_box, 
+            matched_warehouse_img_output, 
+            matched_catalog_page_output, 
+            download_log_file, 
+            download_searched_maint, 
+            download_searched_parts
+        ]
+    )
 
 if __name__ == "__main__":
     demo.launch(
