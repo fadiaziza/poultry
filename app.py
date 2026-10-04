@@ -10,7 +10,7 @@ import requests
 from datetime import datetime
 import pytz
 from collections import Counter
-from PIL import Image, ImageStat
+from PIL import Image
 import gradio as gr
 from google.cloud import storage
 from google import genai
@@ -133,16 +133,20 @@ sync_data_from_gcs()
 # ==========================================
 ID_INSTANCE = "710722737613"
 API_TOKEN_INSTANCE = "8902219901b2411cb1ebfa944bbfc3d7d499d671111c4fe18e"
-ALERT_GROUP_ID = "970599431267@c.us"
 
-def send_whatsapp_alert(message):
+ALERT_GROUP_ID = "970599431267@c.us"
+PURCHASING_MANAGER_PHONE = "972595470033@c.us"
+
+def send_whatsapp_alert(message, target_phone=None):
     if not API_TOKEN_INSTANCE or "YOUR_GREEN_API" in API_TOKEN_INSTANCE:
         return
-    if not ALERT_GROUP_ID or "YOUR_PHONE" in ALERT_GROUP_ID:
+
+    dest_chat = target_phone if target_phone else ALERT_GROUP_ID
+    if not dest_chat or "YOUR_PHONE" in dest_chat:
         return
 
     url = f"https://api.green-api.com/waInstance{ID_INSTANCE}/sendMessage/{API_TOKEN_INSTANCE}"
-    payload = {"chatId": ALERT_GROUP_ID, "message": message}
+    payload = {"chatId": dest_chat, "message": message}
     try:
         requests.post(url, json=payload, timeout=5)
     except Exception as err:
@@ -236,7 +240,7 @@ def fetch_inventory_data():
                     part_name = str(row[1]).strip().strip('"') if len(row) > 1 else ""
                     qty_val = str(row[2]).strip().strip('"') if len(row) > 2 else "0"
                     loc_val = str(row[3]).strip().strip('"') if len(row) > 3 else "مستودع قطع الغيار"
-                    min_stock = str(row[4]).strip().strip('"') if len(row) > 4 else "0"
+                    min_stock = str(row[4]).strip().strip('"') if len(row) > 4 else "2"
 
                     data_map[clean_k] = {
                         "raw_code": raw_code,
@@ -273,7 +277,6 @@ def get_part_inventory_info(part_query):
 # 4. محرك تحليلات ومؤشرات الأداء (KPI Analytics Engine)
 # ==========================================
 def generate_kpi_dashboard_data():
-    """حساب مؤشرات الأداء الحية للقسم من واقع سجل الأعطال والمخزون الميداني مع قراءة فورية"""
     inv_data = fetch_inventory_data()
     total_parts = len(inv_data)
     
@@ -281,16 +284,30 @@ def generate_kpi_dashboard_data():
     low_stock_count = 0
     out_of_stock_count = 0
 
+    critical_parts_choices = []
+    critical_table_rows = []
+
     for item in inv_data.values():
         try:
             qty = float(re.sub(r'[^0-9.]', '', str(item["qty"])))
-            if qty > 2:
-                safe_stock_count += 1
-            elif qty > 0:
-                low_stock_count += 1
-            else:
-                out_of_stock_count += 1
+            min_stk = float(re.sub(r'[^0-9.]', '', str(item.get("min_stock", "2"))))
         except Exception:
+            qty = 0
+            min_stk = 2
+
+        if qty == 0:
+            out_of_stock_count += 1
+            status_text = "🔴 نافد تماماً (Out of Stock)"
+            display_choice = f"{item['raw_code']} | {item['name']} (رصيد: 0)"
+            critical_parts_choices.append(display_choice)
+            critical_table_rows.append((item['raw_code'], item['name'], item['qty'], item.get('min_stock', '2'), item['location'], status_text))
+        elif qty <= min_stk:
+            low_stock_count += 1
+            status_text = "🟡 رصيد حرج (Below Minimum)"
+            display_choice = f"{item['raw_code']} | {item['name']} (رصيد: {item['qty']})"
+            critical_parts_choices.append(display_choice)
+            critical_table_rows.append((item['raw_code'], item['name'], item['qty'], item.get('min_stock', '2'), item['location'], status_text))
+        else:
             safe_stock_count += 1
 
     total_ops = 0
@@ -332,6 +349,13 @@ def generate_kpi_dashboard_data():
     else:
         top_p_md += "| 1 | *لا توجد استعلامات قطع مسجلة بعد* | `0` |\n"
 
+    critical_table_md = "| كود القطعة | اسم القطعة | الرصيد الحالي | الحد الأدنى | موقع الرف | حالة التوريد |\n| :--- | :--- | :-: | :-: | :--- | :--- |\n"
+    if critical_table_rows:
+        for row in critical_table_rows[:8]:
+            critical_table_md += f"| `{row[0]}` | **{row[1]}** | `{row[2]}` | `{row[3]}` | {row[4]} | {row[5]} |\n"
+    else:
+        critical_table_md += "| — | *كافة قطع الغيار ضمن الحدود الآمنة* | — | — | — | 🟢 آمن |\n"
+
     total_manuals_indexed = len(glob.glob(os.path.join(BASE_DIR, "**/*.pdf"), recursive=True))
 
     summary_cards_html = f"""
@@ -342,96 +366,66 @@ def generate_kpi_dashboard_data():
         <span style="font-size: 11px; color: #888; display: block;">كتالوج تشغيل وقطع</span>
     </div>
     <div style="background: #ffffff; padding: 16px; border-radius: 12px; border: 2px solid #e0e0e0; box-shadow: 0 4px 6px rgba(0,0,0,0.05); text-align: center;">
-        <span style="font-size: 13px; color: #555; font-weight: bold; display: block;">📦 قطع الغيار الحية</span>
+        <span style="font-size: 13px; color: #555; font-weight: bold; display: block;">📦 إجمالي قطع المستودع</span>
         <span style="font-size: 26px; font-weight: 900; color: #0277bd;">{total_parts}</span>
-        <span style="font-size: 11px; color: #888; display: block;">مربوطة مع Google Sheet</span>
+        <span style="font-size: 11px; color: #888; display: block;">مربوطة حياً مع Google Sheet</span>
     </div>
     <div style="background: #ffffff; padding: 16px; border-radius: 12px; border: 2px solid #e0e0e0; box-shadow: 0 4px 6px rgba(0,0,0,0.05); text-align: center;">
-        <span style="font-size: 13px; color: #555; font-weight: bold; display: block;">🔍 إجمالي بلاغات الفحص</span>
+        <span style="font-size: 13px; color: #555; font-weight: bold; display: block;">🔍 بلاغات الفحص التراكمية</span>
         <span style="font-size: 26px; font-weight: 900; color: #6a1b9a;">{total_ops}</span>
-        <span style="font-size: 11px; color: #888; display: block;">موثقة في سجل التدقيق</span>
+        <span style="font-size: 11px; color: #888; display: block;">موثقة في سجل التدقيق الميداني</span>
     </div>
-    <div style="background: #ffffff; padding: 16px; border-radius: 12px; border: 2px solid #e0e0e0; box-shadow: 0 4px 6px rgba(0,0,0,0.05); text-align: center;">
-        <span style="font-size: 13px; color: #555; font-weight: bold; display: block;">🟢 رصيد المخزون الآمن</span>
-        <span style="font-size: 26px; font-weight: 900; color: #2e7d32;">{safe_stock_count}</span>
-        <span style="font-size: 11px; color: #d32f2f; display: block;">🔴 نافد / حرج: {out_of_stock_count + low_stock_count}</span>
+    <div style="background: #ffffff; padding: 16px; border-radius: 12px; border: 2px solid #ffcdd2; box-shadow: 0 4px 6px rgba(0,0,0,0.05); text-align: center;">
+        <span style="font-size: 13px; color: #b71c1c; font-weight: bold; display: block;">🚨 قطع حرجة / نافدة</span>
+        <span style="font-size: 26px; font-weight: 900; color: #d32f2f;">{out_of_stock_count + low_stock_count}</span>
+        <span style="font-size: 11px; color: #d32f2f; display: block;">(نافد: {out_of_stock_count} • منخفض: {low_stock_count})</span>
     </div>
 </div>
 """
-    return summary_cards_html, top_m_md, top_p_md
+    dropdown_update = gr.update(choices=critical_parts_choices, value=critical_parts_choices[0] if critical_parts_choices else None)
+    return summary_cards_html, top_m_md, top_p_md, critical_table_md, dropdown_update
+
+def send_instant_purchase_order(selected_part_entry):
+    if not selected_part_entry:
+        return "⚠️ يرجى اختيار قطعة من قائمة القطع الحرجة."
+
+    raw_code = selected_part_entry.split("|")[0].strip()
+    inv_info = get_part_inventory_info(raw_code)
+    
+    if not inv_info:
+        return f"⚠️ تعذر العثور على بيانات القطعة `{raw_code}`."
+
+    tz = pytz.timezone('Asia/Hebron')
+    timestamp = datetime.now(tz).strftime('%Y-%m-%d %I:%M %p')
+
+    po_message = (
+        f"📋 *طلب شراء وتوريد قطع غيار عاجل*\n"
+        f"🏢 *شركة دواجن فلسطين - مسلخ عزيزا*\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"👤 *إلى الأخ:* أحمد حطاب (قسم المشتريات)\n"
+        f"👷 *من:* م. فادي محمود (مشرف الصيانة والأتمتة)\n"
+        f"📅 *تاريخ وتوقيت الطلب:* {timestamp}\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"تحية طيبة وبعد،،\n\n"
+        f"يرجى التكرم بالعمل على توفير وشراء القطعة التالية نظراً لوصول رصيدها إلى حد الخطر التشغيلي في صالة المسلخ:\n\n"
+        f"🔹 *كود القطعة (Part No):* `{inv_info['raw_code']}`\n"
+        f"🔹 *اسم وتوصيف القطعة:* *{inv_info['name']}*\n"
+        f"🔹 *الرصيد المتبقي حالياً:* `{inv_info['qty']}`\n"
+        f"🔹 *حد الأمان الأدنى للمستودع:* `{inv_info.get('min_stock', '2')}`\n"
+        f"🔹 *موقع التخزين والرف:* {inv_info['location']}\n\n"
+        f"⚠️ *درجة الأهمية:* عاجل جداً لتفادي أي توقف مفاجئ في خطوط الإنتاج والذبح.\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"شاكرين لكم حسن التعاون،،\n"
+        f"م. فادي محمود"
+    )
+
+    send_whatsapp_alert(po_message, target_phone=PURCHASING_MANAGER_PHONE)
+    print(f"[✓] Purchase Order sent via WhatsApp to Ahmed Hattab (+972595470033) for: {inv_info['raw_code']}")
+
+    return f"✅ **تم إرسال طلب الشراء الرسمي بنجاح عبر الواتساب** إلى مسؤول المشتريات **أحمد حطاب** (+972595470033) من **م. فادي محمود** للقطعة: `{inv_info['raw_code']} - {inv_info['name']}`."
 
 # ==========================================
-# 5. فهرسة صفحات الكتالوجات وبصمات صور المستودع
-# ==========================================
-manual_pages = []
-
-def build_manual_index():
-    global manual_pages
-    manual_pages = []
-    pdf_files = glob.glob(os.path.join(BASE_DIR, "**/*.pdf"), recursive=True)
-    print(f"[*] Indexing {len(pdf_files)} PDF manuals...")
-    for pdf_path in pdf_files:
-        filename = os.path.basename(pdf_path)
-        try:
-            doc = fitz.open(pdf_path)
-            for page_num in range(len(doc)):
-                page_text = doc[page_num].get_text("text").strip()
-                if len(page_text) > 15:
-                    manual_pages.append({
-                        "filename": filename,
-                        "filepath": pdf_path,
-                        "page": page_num + 1,
-                        "text": page_text
-                    })
-        except Exception:
-            pass
-    print(f"[✓] Successfully indexed {len(manual_pages)} pages.")
-
-build_manual_index()
-
-part_images_map = {}
-image_signatures = {}
-
-def get_img_sig(img):
-    img_gray = img.convert('L').resize((16, 16), Image.Resampling.BILINEAR)
-    pixels = list(img_gray.getdata())
-    avg = sum(pixels) / len(pixels)
-    return [1 if p > avg else 0 for p in pixels]
-
-def build_image_index():
-    global part_images_map, image_signatures
-    part_images_map = {}
-    image_signatures = {}
-    if not os.path.exists(IMAGE_DIR):
-        return
-    valid_exts = ('.jpg', '.jpeg', '.png', '.JPG', '.PNG')
-    for f in os.listdir(IMAGE_DIR):
-        if f.endswith(valid_exts):
-            part_no = os.path.splitext(f)[0]
-            clean_k = re.sub(r'[^a-zA-Z0-9]', '', part_no).lower()
-            img_path = os.path.join(IMAGE_DIR, f)
-            part_images_map[clean_k] = (part_no, img_path)
-            try:
-                with Image.open(img_path) as im:
-                    image_signatures[part_no] = (get_img_sig(im), img_path)
-            except Exception:
-                pass
-    print(f"[✓] Indexed {len(image_signatures)} part images for visual comparison.")
-
-build_image_index()
-
-logo_base64 = ""
-for p in ["logo.png", "/app/logo.png"]:
-    if os.path.exists(p):
-        try:
-            with open(p, "rb") as f:
-                logo_base64 = base64.b64encode(f.read()).decode("utf-8")
-            break
-        except Exception:
-            pass
-
-# ==========================================
-# 6. دوال استخراج ومعالجة الصور ودمج الصفحات
+# 5. دوال استخراج ومعالجة الصور ودمج الصفحات
 # ==========================================
 def render_pdf_page_to_image(filepath, page_num):
     try:
@@ -571,7 +565,7 @@ def find_linked_manuals_for_machine(machine_name):
     return {"maintenance_manual": None, "parts_catalog": None, "other_files": []}
 
 # ==========================================
-# 7. محرك الصيانة الدورية وقوائم الفحص (PM Checklist Engine)
+# 6. محرك الصيانة الدورية وقوائم الفحص (PM Checklist Engine)
 # ==========================================
 def extract_pm_checklist_for_machine(machine_name):
     if not machine_name or machine_name not in machine_catalogs_db:
@@ -670,7 +664,7 @@ Format as an executive Markdown Table.
         return first_img, final_md
 
 # ==========================================
-# 8. محرك Gemini لاستخراج جميع الأعطال بالكامل
+# 7. محرك Gemini لاستخراج جميع الأعطال بالكامل
 # ==========================================
 def ask_gemini_engineer(user_query, context_text):
     if not ai_client or not context_text:
@@ -710,7 +704,7 @@ MANDATORY INSTRUCTIONS:
         return ""
 
 # ==========================================
-# 9. محرك البحث الذكي (متعدد الصفحات للأعطال)
+# 8. محرك البحث الذكي (متعدد الصفحات للأعطال)
 # ==========================================
 def search_engine(query, top_k=5):
     if not manual_pages:
@@ -718,7 +712,6 @@ def search_engine(query, top_k=5):
     clean_q = query.strip()
     clean_q_lower = clean_q.lower()
 
-    # 1. إنذارات وتحذيرات أوتوماك (E / W)
     alarm_match = re.search(r'\b([EWew])\s*0*(\d+)\b', clean_q)
     if alarm_match:
         prefix = alarm_match.group(1).upper()
@@ -736,7 +729,6 @@ def search_engine(query, top_k=5):
             return matched_sorted[:top_k], std_code, "alarm"
         return [], std_code, "alarm"
 
-    # 2. مطابقة رقم القطعة
     code_match = re.search(r'([A-Za-z0-9]{2,4})\.([A-Za-z0-9]{4})\.([A-Za-z0-9]{3,4})\.([A-Za-z0-9]{2,4})', clean_q)
     if code_match:
         full_code = code_match.group(0)
@@ -750,7 +742,6 @@ def search_engine(query, top_k=5):
             return matched[:top_k], full_code, "part"
         return [], full_code, "part"
 
-    # 3. قاموس الماكينات بالمسميات الميدانية الرسمية المعتمدة
     all_machines_map = {
         "تغليف": {"name": "ماكينة التغليف أوتوماك (Automac 55 / 75 / 297)", "keys": ["automac", "wrapping", "297", "298", "a55", "fabbri", "stretch"]},
         "أوتوماك": {"name": "ماكينة التغليف أوتوماك (Automac 55 / 75 / 297)", "keys": ["automac", "wrapping", "297", "298", "a55", "fabbri"]},
@@ -871,7 +862,7 @@ def view_machine_paired_catalogs(machine_name):
     return maint_pdf, parts_pdf, cover_img, info_md
 
 # ==========================================
-# 10. دالة المعالجة والتوجيه الرئيسية
+# 9. دالة المعالجة والتوجيه الرئيسية
 # ==========================================
 def maintenance_copilot(query, input_image=None):
     clean_q = query.strip() if query else ""
@@ -898,10 +889,10 @@ def maintenance_copilot(query, input_image=None):
                 timestamp = datetime.now(tz).strftime('%Y-%m-%d %I:%M %p')
                 fail_msg = f"⚠️ *تنبيه فحص ميداني - مسلخ عزيزا*\n⏰ الوقت: {timestamp}\n📸 تم رفع صورة قطعة لم يتعرف عليها النظام تلقائياً، يرجى التحقق اليدوي."
                 send_whatsapp_alert(fail_msg)
-                return "❌ لم يتم العثور على صورة متطابقة بصرياً مع قطع المستودع المفهرسة. يرجى إدخال اسم الماكينة، كود الإنذار، أو رقم القطعة كتابةً.\n---\n📲 تم إرسال إشعار لطاقم الصيانة بالمتابعة.", None, None, None, None, None, *generate_kpi_dashboard_data()
+                return "❌ لم يتم العثور على صورة متطابقة بصرياً مع قطع المستودع المفهرسة. يرجى إدخال اسم الماكينة، كود الإنذار، أو رقم القطعة كتابةً.\n---\n📲 تم إرسال إشعار لطاقم الصيانة بالمتابعة.", None, None, None, None, None
 
     if not clean_q:
-        return "⚠️ يرجى إدخال اسم الماكينة بالعربي (مثل: ماكينة التغليف، السكالدر، المعاطه، المايسترو)، كود الإنذار (E002)، أو رقم القطعة.", None, None, None, None, None, *generate_kpi_dashboard_data()
+        return "⚠️ يرجى إدخال اسم الماكينة بالعربي (مثل: ماكينة التغليف، السكالدر، المعاطه، المايسترو)، كود الإنذار (E002)، أو رقم القطعة.", None, None, None, None, None
 
     # 2. فحص رصيد القطعة في مستودع المسلخ من Google Sheet
     inv_info = get_part_inventory_info(clean_q)
@@ -960,11 +951,10 @@ def maintenance_copilot(query, input_image=None):
     maint_pdf_to_download = linked_catalog_files.get("maintenance_manual")
     parts_pdf_to_download = linked_catalog_files.get("parts_catalog")
 
-    # توثيق العملية فورياً في سجل الإكسل
     log_search_query(clean_q, hit_type, recorded_machine_name, recorded_part_name, recorded_code, inv_info)
 
     header_info = (
-        f"> ⚙️️ **الماكينة المستهدفة:** `{recorded_machine_name}`  \n"
+        f"> ⚙️ **الماكينة المستهدفة:** `{recorded_machine_name}`  \n"
         f"> 🏷️ **القطعة / العطل:** `{recorded_part_name}`  \n\n"
     )
     response.insert(0, header_info)
@@ -1055,13 +1045,21 @@ def maintenance_copilot(query, input_image=None):
     send_whatsapp_alert(alert_msg)
     response.append("\n---\n📲 تم إرسال إشعار فوري لطاقم الصيانة وتوثيق الماكينة والقطعة في سجل إكسل.")
 
-    # توليد وتحديث بيانات مؤشرات الأداء الحية فوراً مع إتمام البحث
-    updated_kpi_cards, updated_top_m, updated_top_p = generate_kpi_dashboard_data()
+    return (
+        "\n".join(response), 
+        matched_warehouse_image, 
+        matched_catalog_page_img, 
+        LOG_FILE_PATH, 
+        maint_pdf_to_download, 
+        parts_pdf_to_download
+    )
 
-    return "\n".join(response), matched_warehouse_image, matched_catalog_page_img, LOG_FILE_PATH, maint_pdf_to_download, parts_pdf_to_download, updated_kpi_cards, updated_top_m, updated_top_p
+# دالة مسح الحقول الصريحة والمضمونة بنسبة 100%
+def clear_all_inputs():
+    return "", None, "", None, None, None, None, None
 
 # ==========================================
-# 11. واجهة Gradio الرسمية مع التحديث اللحظي للـ KPI
+# 10. واجهة Gradio الرسمية
 # ==========================================
 total_manuals = len(glob.glob(os.path.join(BASE_DIR, "**/*.pdf"), recursive=True))
 
@@ -1076,7 +1074,7 @@ HEADER_HTML = f"""
             </div>
             <div>
                 <h1 style="margin: 0; font-size: 23px; font-weight: 800; color: #ffffff;">شركة دواجن فلسطين - مسلخ عزيزا</h1>
-                <p style="margin: 4px 0 0 0; font-size: 14px; color: #e8f5e9;">منصة الصيانة الهندسية الذكية (جداول الفحص الدوري Checklist • مؤشرات KPI • الكتالوج المزدوج)</p>
+                <p style="margin: 4px 0 0 0; font-size: 14px; color: #e8f5e9;">منصة الصيانة الهندسية الذكية (قرارات الشراء الاستباقية • مؤشرات KPI • جداول Checklist)</p>
             </div>
         </div>
         <div style="border-right: 2px solid rgba(255,255,255,0.25); padding-right: 20px;">
@@ -1092,7 +1090,7 @@ with gr.Blocks(title="منصة الصيانة الهندسية الذكية - م
     gr.HTML(HEADER_HTML)
     
     with gr.Row():
-        status_box = gr.Markdown(f"📊 **حالة النظام:** تم تجهيز وفهرسة `{total_manuals}` كتالوج فني، وتفعيل لوحة الصيانة الدورية (Checklists) ومؤشرات الأداء اللحظية (KPIs).")
+        status_box = gr.Markdown(f"📊 **حالة النظام:** تم تجهيز وفهرسة `{total_manuals}` كتالوج فني، وتفعيل قرارات التوريد الاستباقية ومؤشرات الأداء اللحظية (KPIs).")
         
     with gr.Tabs():
         # التبويب الأول: البحث الذكي والتشخيص
@@ -1156,34 +1154,50 @@ with gr.Blocks(title="منصة الصيانة الهندسية الذكية - م
                 outputs=[pm_image_output, pm_output_text]
             )
 
-        # التبويب الثالث: لوحة مؤشرات الأداء الحية (KPI Dashboard)
-        with gr.Tab("📈 لوحة مؤشرات الأداء الحية للقسم (KPI Dashboard)") as kpi_tab:
+        # التبويب الثالث: لوحة مؤشرات الأداء والقرارات الاستباقية (KPI & Actionable Purchase Orders)
+        with gr.Tab("📈 لوحة مؤشرات الأداء وقرارات التوريد (KPI & Actions)") as kpi_tab:
             with gr.Column():
-                refresh_kpi_btn = gr.Button("🔄 تحديث قراءات ومؤشرات الأداء اللحظية", variant="secondary")
+                refresh_kpi_btn = gr.Button("🔄 تحديث قراءات ومؤشرات الأداء والقطع الحرجة", variant="secondary")
                 kpi_cards_html = gr.HTML()
                 
+                with gr.Group():
+                    gr.Markdown("### 🛒 الإجراء الاستباقي: إصدار أمر شراء وتوريد فوري للقطع الحرجة:")
+                    with gr.Row():
+                        critical_part_selector = gr.Dropdown(
+                            label="اختر القطعة الحرجة أو النافدة لإصدار طلب الشراء فوراً:",
+                            choices=[]
+                        )
+                        send_po_btn = gr.Button("📲 إرسال طلب الشراء فوراً لمسؤول المشتريات أحمد حطاب (+972595470033)", variant="primary")
+                    po_status_output = gr.Markdown()
+
+                send_po_btn.click(
+                    fn=send_instant_purchase_order,
+                    inputs=[critical_part_selector],
+                    outputs=[po_status_output]
+                )
+
+                gr.Markdown("### 🚨 سجل القطع المهددة بالنفاد وتجاوز الحد الأدنى (Stock Shortage Risk):")
+                critical_stock_table = gr.Markdown()
+
                 with gr.Row():
                     with gr.Column(scale=1):
-                        gr.Markdown("### 🚨 أعلى 5 ماكينات تسجيلاً للأعطال والفحوصات (Top Critical Assets):")
+                        gr.Markdown("### 🏭 أعلى 5 ماكينات تسجيلاً للأعطال والفحوصات (Top Critical Assets):")
                         top_machines_table = gr.Markdown()
                     with gr.Column(scale=1):
                         gr.Markdown("### ⚙️ أكثر 5 قطع غيار استعلاماً وطلباً (High-Demand Spare Parts):")
                         top_parts_table = gr.Markdown()
 
-            # 1. تحديث المؤشرات عند تحميل الصفحة
             demo.load(
                 fn=generate_kpi_dashboard_data,
-                outputs=[kpi_cards_html, top_machines_table, top_parts_table]
+                outputs=[kpi_cards_html, top_machines_table, top_parts_table, critical_stock_table, critical_part_selector]
             )
-            # 2. تحديث المؤشرات تلقائياً بمجرد النقر على تبويب المؤشرات
             kpi_tab.select(
                 fn=generate_kpi_dashboard_data,
-                outputs=[kpi_cards_html, top_machines_table, top_parts_table]
+                outputs=[kpi_cards_html, top_machines_table, top_parts_table, critical_stock_table, critical_part_selector]
             )
-            # 3. تحديث المؤشرات عبر الزر اليدوي
             refresh_kpi_btn.click(
                 fn=generate_kpi_dashboard_data,
-                outputs=[kpi_cards_html, top_machines_table, top_parts_table]
+                outputs=[kpi_cards_html, top_machines_table, top_parts_table, critical_stock_table, critical_part_selector]
             )
 
         # التبويب الرابع: مكتبة الماكينات المزدوجة (كتالوج الصيانة + كتالوج قطع الغيار)
@@ -1223,7 +1237,7 @@ with gr.Blocks(title="منصة الصيانة الهندسية الذكية - م
                 outputs=[download_machine_maint, download_machine_parts, machine_cover_output, machine_info_output]
             )
 
-    # ربط عملية البحث بتحديث لوحة الـ KPI فورياً مع مخرجات التقرير
+    # 1. ربط زر البحث بمخرجات نتائج الفحص والكتالوجات الستة
     submit_btn.click(
         fn=maintenance_copilot,
         inputs=[query_input, image_input],
@@ -1233,14 +1247,20 @@ with gr.Blocks(title="منصة الصيانة الهندسية الذكية - م
             matched_catalog_page_output, 
             download_log_file, 
             download_searched_maint, 
-            download_searched_parts,
-            kpi_cards_html,
-            top_machines_table,
-            top_parts_table
+            download_searched_parts
         ]
     )
+
+    # 2. تحديث لوحة الـ KPI تلقائياً عند إجراء أي بحث
+    submit_btn.click(
+        fn=generate_kpi_dashboard_data,
+        outputs=[kpi_cards_html, top_machines_table, top_parts_table, critical_stock_table, critical_part_selector]
+    )
+
+    # 3. ربط زر المسح عبر دالة clear_all_inputs الثابتة والآمنة
     clear_btn.click(
-        lambda: ("", None, "", None, None, None, None, None),
+        fn=clear_all_inputs,
+        inputs=[],
         outputs=[
             query_input, 
             image_input, 
