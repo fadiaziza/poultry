@@ -482,6 +482,37 @@ def render_machine_cover_image(filepath):
         print(f"[!] Error rendering machine cover image: {e}")
         return None
 
+def get_img_sig(img):
+    img_gray = img.convert('L').resize((16, 16), Image.Resampling.BILINEAR)
+    pixels = list(img_gray.getdata())
+    avg = sum(pixels) / len(pixels)
+    return [1 if p > avg else 0 for p in pixels]
+
+part_images_map = {}
+image_signatures = {}
+
+def build_image_index():
+    global part_images_map, image_signatures
+    part_images_map = {}
+    image_signatures = {}
+    if not os.path.exists(IMAGE_DIR):
+        return
+    valid_exts = ('.jpg', '.jpeg', '.png', '.JPG', '.PNG')
+    for f in os.listdir(IMAGE_DIR):
+        if f.endswith(valid_exts):
+            part_no = os.path.splitext(f)[0]
+            clean_k = re.sub(r'[^a-zA-Z0-9]', '', part_no).lower()
+            img_path = os.path.join(IMAGE_DIR, f)
+            part_images_map[clean_k] = (part_no, img_path)
+            try:
+                with Image.open(img_path) as im:
+                    image_signatures[part_no] = (get_img_sig(im), img_path)
+            except Exception:
+                pass
+    print(f"[✓] Indexed {len(image_signatures)} part images for visual comparison.")
+
+build_image_index()
+
 def match_uploaded_image(uploaded_img):
     if uploaded_img is None or not image_signatures:
         return None, None
@@ -563,6 +594,32 @@ def find_linked_manuals_for_machine(machine_name):
         if any(word in group_k.lower() for word in m_clean.split() if len(word) > 3):
             return data
     return {"maintenance_manual": None, "parts_catalog": None, "other_files": []}
+
+manual_pages = []
+
+def build_manual_index():
+    global manual_pages
+    manual_pages = []
+    pdf_files = glob.glob(os.path.join(BASE_DIR, "**/*.pdf"), recursive=True)
+    print(f"[*] Indexing {len(pdf_files)} PDF manuals...")
+    for pdf_path in pdf_files:
+        filename = os.path.basename(pdf_path)
+        try:
+            doc = fitz.open(pdf_path)
+            for page_num in range(len(doc)):
+                page_text = doc[page_num].get_text("text").strip()
+                if len(page_text) > 15:
+                    manual_pages.append({
+                        "filename": filename,
+                        "filepath": pdf_path,
+                        "page": page_num + 1,
+                        "text": page_text
+                    })
+        except Exception:
+            pass
+    print(f"[✓] Successfully indexed {len(manual_pages)} pages.")
+
+build_manual_index()
 
 # ==========================================
 # 6. محرك الصيانة الدورية وقوائم الفحص (PM Checklist Engine)
@@ -874,7 +931,6 @@ def maintenance_copilot(query, input_image=None):
     recorded_part_name = "—"
     recorded_code = clean_q
 
-    # 1. معالجة الصورة المرفوعة للقطعة
     if input_image is not None:
         matched_part_no, matched_img = match_uploaded_image(input_image)
         if matched_part_no:
@@ -894,7 +950,6 @@ def maintenance_copilot(query, input_image=None):
     if not clean_q:
         return "⚠️ يرجى إدخال اسم الماكينة بالعربي (مثل: ماكينة التغليف، السكالدر، المعاطه، المايسترو)، كود الإنذار (E002)، أو رقم القطعة.", None, None, None, None, None
 
-    # 2. فحص رصيد القطعة في مستودع المسلخ من Google Sheet
     inv_info = get_part_inventory_info(clean_q)
     if inv_info:
         qty_str = inv_info["qty"]
@@ -916,7 +971,6 @@ def maintenance_copilot(query, input_image=None):
         )
         response.append(stock_box)
 
-    # 3. محرك البحث في الكتالوجات
     hits, matched_term, hit_type = search_engine(clean_q, top_k=4)
     if not matched_warehouse_image and hit_type not in ["alarm", "trouble_table"]:
         matched_warehouse_image = find_image_for_part(matched_term if matched_term else clean_q)
@@ -959,7 +1013,6 @@ def maintenance_copilot(query, input_image=None):
     )
     response.insert(0, header_info)
 
-    # أ) إنذارات وتحذيرات ماكينات التغليف (E / W)
     if hit_type == "alarm" and matched_term:
         prefix = matched_term[0]
         alarm_status = "CRITICAL ALARM (MACHINE STOPPED)" if prefix == "E" else "WARNING ALERT (PREVENTIVE)"
@@ -975,7 +1028,6 @@ def maintenance_copilot(query, input_image=None):
         else:
             response.append(f"⚠️ No direct catalog page found for `{matched_term}` in current indexed manuals.")
 
-    # ب) جداول استكشاف الأعطال الشاملة
     elif hit_type == "trouble_table":
         response.append(f"## 🛠️ {matched_term} - Complete Technical Troubleshooting Records\n")
         if hits:
@@ -997,7 +1049,6 @@ def maintenance_copilot(query, input_image=None):
         else:
             response.append(f"⚠️ لم يتم العثور على صفحات جدول الأعطال الخاصة بـ `{matched_term}`.")
 
-    # ج) أرقام القطع والبحث العام
     else:
         if hits:
             ai_insight = ask_gemini_engineer(clean_q, hits[0]['text'])
@@ -1028,7 +1079,7 @@ def maintenance_copilot(query, input_image=None):
     if matched_warehouse_image:
         response.append("\n🖼️ **تم إرفاق صورة الماكينة الكاملة في المربع الأيسر.**")
     if matched_catalog_page_img:
-        response.append("📖 **تم دمج وعرض صفحات جدول الأعطال الكاملة للتوثيق في المربع الأيمن.**")
+        response.append("📖 **تم دمج وععرض صفحات جدول الأعطال الكاملة للتوثيق في المربع الأيمن.**")
 
     tz = pytz.timezone('Asia/Hebron')
     timestamp = datetime.now(tz).strftime('%Y-%m-%d %I:%M %p')
@@ -1054,23 +1105,33 @@ def maintenance_copilot(query, input_image=None):
         parts_pdf_to_download
     )
 
-# دالة مسح الحقول الصريحة والمضمونة بنسبة 100%
 def clear_all_inputs():
     return "", None, "", None, None, None, None, None
 
 # ==========================================
-# 10. واجهة Gradio الرسمية
+# 10. إعداد الترويسة والشعار بأمان تام
 # ==========================================
-total_manuals = len(glob.glob(os.path.join(BASE_DIR, "**/*.pdf"), recursive=True))
+logo_base64 = ""
+for p in ["logo.png", "/app/logo.png"]:
+    if os.path.exists(p):
+        try:
+            with open(p, "rb") as f:
+                logo_base64 = base64.b64encode(f.read()).decode("utf-8")
+            break
+        except Exception:
+            pass
 
-logo_html = f'<img src="data:image/png;base64,{logo_base64}" style="width: 100%; height: 100%; object-fit: contain;">' if logo_base64 else '<span style="font-size: 20px; font-weight: 900; color: #1b5e20;">عزيزا</span>'
+if logo_base64:
+    logo_html_tag = '<img src="data:image/png;base64,' + logo_base64 + '" style="width: 100%; height: 100%; object-fit: contain;">'
+else:
+    logo_html_tag = '<span style="font-size: 20px; font-weight: 900; color: #1b5e20;">عزيزا</span>'
 
-HEADER_HTML = f"""
+HEADER_HTML = """
 <div style="background: linear-gradient(135deg, #0b3d20 0%, #1b5e20 100%); padding: 18px 25px; border-radius: 14px; color: white; margin-bottom: 20px; box-shadow: 0 4px 15px rgba(0,0,0,0.18); direction: rtl; text-align: right; border-bottom: 4px solid #ffcc00;">
     <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 15px;">
         <div style="display: flex; align-items: center; gap: 20px;">
             <div style="background: #ffffff; border-radius: 50%; padding: 4px; box-shadow: 0 4px 12px rgba(0,0,0,0.3); display: flex; align-items: center; justify-content: center; width: 85px; height: 85px; border: 3px solid #ffcc00; overflow: hidden;">
-                {logo_html}
+                """ + logo_html_tag + """
             </div>
             <div>
                 <h1 style="margin: 0; font-size: 23px; font-weight: 800; color: #ffffff;">شركة دواجن فلسطين - مسلخ عزيزا</h1>
@@ -1085,6 +1146,8 @@ HEADER_HTML = f"""
     </div>
 </div>
 """
+
+total_manuals = len(glob.glob(os.path.join(BASE_DIR, "**/*.pdf"), recursive=True))
 
 with gr.Blocks(title="منصة الصيانة الهندسية الذكية - مسلخ عزيزا") as demo:
     gr.HTML(HEADER_HTML)
@@ -1237,7 +1300,6 @@ with gr.Blocks(title="منصة الصيانة الهندسية الذكية - م
                 outputs=[download_machine_maint, download_machine_parts, machine_cover_output, machine_info_output]
             )
 
-    # 1. ربط زر البحث بمخرجات نتائج الفحص والكتالوجات الستة
     submit_btn.click(
         fn=maintenance_copilot,
         inputs=[query_input, image_input],
@@ -1251,13 +1313,11 @@ with gr.Blocks(title="منصة الصيانة الهندسية الذكية - م
         ]
     )
 
-    # 2. تحديث لوحة الـ KPI تلقائياً عند إجراء أي بحث
     submit_btn.click(
         fn=generate_kpi_dashboard_data,
         outputs=[kpi_cards_html, top_machines_table, top_parts_table, critical_stock_table, critical_part_selector]
     )
 
-    # 3. ربط زر المسح عبر دالة clear_all_inputs الثابتة والآمنة
     clear_btn.click(
         fn=clear_all_inputs,
         inputs=[],
