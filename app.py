@@ -22,10 +22,9 @@ BUCKET_NAME = "aziza-manuals-storage"
 BASE_DIR = "/tmp/Maintenance_Manuals"
 IMAGE_DIR = os.path.join(BASE_DIR, "Real_Parts_Images")
 
-# مسار ملف سجل عمليات البحث (Excel / CSV)
 LOG_FILE_PATH = "/tmp/maintenance_search_log.csv"
 
-# رابط استعلام جدول Google Sheets المباشر والمستقر للمخزون
+# رابط جدول Google Sheets المباشر والمستقر للمخزون
 SHEET_ID = "1_scf-CUSouwQvJan4d12UuC7LX8eHC7E4YAjC41q2r4"
 GOOGLE_SHEET_CSV_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv"
 
@@ -37,7 +36,12 @@ if GEMINI_API_KEY:
     except Exception as e:
         print(f"[!] Warning initializing Gemini API: {e}")
 
+# خريطة تجميع الكتالوجات حسب الماكينة
+machine_catalogs_db = {}
+available_machines_list = []
+
 def sync_data_from_gcs():
+    global machine_catalogs_db, available_machines_list
     os.makedirs(BASE_DIR, exist_ok=True)
     os.makedirs(IMAGE_DIR, exist_ok=True)
     print(f"[*] Starting download from GCS bucket: {BUCKET_NAME}...")
@@ -59,6 +63,72 @@ def sync_data_from_gcs():
         print(f"[✓] GCS Sync completed. Downloaded {count} files.")
     except Exception as e:
         print(f"[!] Warning during GCS sync: {e}")
+
+    build_machine_catalog_groups()
+
+def build_machine_catalog_groups():
+    """تجميع الكتالوجات ذكياً بحيث يرتبط كتالوج الصيانة وكتالوج قطع الغيار لكل ماكينة معاً"""
+    global machine_catalogs_db, available_machines_list
+    machine_catalogs_db = {}
+    
+    pdf_list = glob.glob(os.path.join(BASE_DIR, "**/*.pdf"), recursive=True)
+    
+    # خريطة الماكينات الرئيسية للتعرف والتجميع
+    machine_patterns = [
+        ("ماكينة التفريغ مايسترو (Maestro Eviscerator 0600)", ["maestro", "eviscerat", "0600"]),
+        ("ماكينة قص المخرج الفنت (Vent Cutter 0100)", ["vent", "cutter", "0100"]),
+        ("ماكينة الفتح والمقص (Opening Machine 0450)", ["opening", "scissors", "0450"]),
+        ("حوض السمط (Scalder 0560 / 0990)", ["scalder", "scalding", "0560", "0990"]),
+        ("ماكينة نزع الريش (Plucker JM64 / 2470)", ["plucker", "picking", "jm64", "2470", "0770"]),
+        ("ماكينة تنظيف القوانص (Gizzard Harvester CD-6000)", ["gizzard", "peeler", "cd-6000", "1860"]),
+        ("ماكينة سحب الرؤوس (Head Puller 2920)", ["head puller", "2920"]),
+        ("ماكينة قص الأرجل (Hock Cutter 3000)", ["hock", "leg cutter", "3000"]),
+        ("سير الشواكل والناقل المعلق (Overhead Conveyor 0230)", ["shackle", "overhead", "0230"]),
+        ("سير البانات لنقل الدواجن (Pan Conveyor Single)", ["pan conveyor", "pan single"]),
+        ("ماكينة التغليف أوتوماك (Automac 55 / 75 / 297)", ["automac", "wrapping", "297", "298", "fabbri"]),
+        ("مضخات الفاكيوم وتفريغ الرئة (Vacuum Pumps)", ["vacuum", "lung", "robuschi", "2170", "0190"]),
+        ("كمبرسورات ومنظومة التبريد المركزية", ["compressor", "airpol", "atlas", "refrigeration", "2410"])
+    ]
+
+    for p in pdf_list:
+        fname = os.path.basename(p)
+        fname_lower = fname.lower()
+        
+        # تصنيف نوع الكتالوج: هل هو قطع غيار أم صيانة وتشغيل
+        is_parts = any(k in fname_lower for k in ["part", "parts", "spare", "component", "قطعة", "قطع"])
+        
+        assigned_group = None
+        for m_name, keys in machine_patterns:
+            if any(k in fname_lower for k in keys):
+                assigned_group = m_name
+                break
+                
+        if not assigned_group:
+            # استخراج اسم الماكينة من اسم الملف تلقائياً
+            clean_name = os.path.splitext(fname)[0].replace("_", " ").replace("-", " ")
+            clean_name = re.sub(r'\b(part|parts|maintenance|user|manual|catalog)\b', '', clean_name, flags=re.I).strip()
+            assigned_group = f"ماكينة {clean_name}" if clean_name else "ماكينات عامة"
+
+        if assigned_group not in machine_catalogs_db:
+            machine_catalogs_db[assigned_group] = {
+                "maintenance_manual": None,
+                "parts_catalog": None,
+                "other_files": []
+            }
+
+        if is_parts:
+            if not machine_catalogs_db[assigned_group]["parts_catalog"]:
+                machine_catalogs_db[assigned_group]["parts_catalog"] = p
+            else:
+                machine_catalogs_db[assigned_group]["other_files"].append(p)
+        else:
+            if not machine_catalogs_db[assigned_group]["maintenance_manual"]:
+                machine_catalogs_db[assigned_group]["maintenance_manual"] = p
+            else:
+                machine_catalogs_db[assigned_group]["other_files"].append(p)
+
+    available_machines_list = sorted(list(machine_catalogs_db.keys()))
+    print(f"[✓] Grouped {len(pdf_list)} manuals into {len(available_machines_list)} machine families.")
 
 sync_data_from_gcs()
 
@@ -86,7 +156,6 @@ def send_whatsapp_alert(message):
 # 2. محرك تسجيل وتوثيق العمليات في الإكسل (Audit Logger)
 # ==========================================
 def log_search_query(raw_query, hit_type, machine_name, part_name, part_code, stock_info):
-    """توثيق اسم الماكينة واسم القطعة والإنذار في سجل إكسل الميداني"""
     tz = pytz.timezone('Asia/Hebron')
     timestamp = datetime.now(tz).strftime('%Y-%m-%d %I:%M:%S %p')
     
@@ -109,7 +178,6 @@ def log_search_query(raw_query, hit_type, machine_name, part_name, part_code, st
             qty = stock_info.get("qty", "غير مسجل") if stock_info else "غير مسجل"
             loc = stock_info.get("location", "مستودع المسلخ") if stock_info else "مستودع المسلخ"
             
-            # تحديد نوع العملية بالعربي
             type_labels = {
                 "alarm": "إنذار تشغيلي (Alarm/Fault)",
                 "trouble_table": "استكشاف أعطال (Troubleshooting)",
@@ -325,7 +393,7 @@ def render_machine_cover_image(filepath):
         doc = fitz.open(filepath)
         page = doc[0]
         pix = page.get_pixmap(dpi=150)
-        out_img_path = f"/tmp/cover_{os.path.basename(filepath)}.png"
+        out_img_path = f"/tmp/cover_{os.path.basename(filepath)}_{os.path.getmtime(filepath)}.png"
         pix.save(out_img_path)
         return out_img_path
     except Exception as e:
@@ -373,7 +441,6 @@ def find_image_for_part(query_text):
             return v[1]
     return None
 
-# دالة ذكية لتحديد اسم الماكينة من اسم الكتالوج أو المحتوى
 def deduce_machine_from_filename(filename):
     f_lower = filename.lower()
     if any(k in f_lower for k in ["automac", "297", "298", "wrapping", "fabbri"]):
@@ -405,6 +472,19 @@ def deduce_machine_from_filename(filename):
     else:
         clean_name = os.path.splitext(filename)[0].replace("_", " ").replace("-", " ")
         return f"ماكينة {clean_name}"
+
+def find_linked_manuals_for_machine(machine_name):
+    """جلب كل من كتالوج الصيانة وكتالوج قطع الغيار لنفس الماكينة"""
+    if machine_name in machine_catalogs_db:
+        return machine_catalogs_db[machine_name]
+    
+    # محاولة مطابقة تقريبية بالاسم
+    m_clean = machine_name.lower()
+    for group_k, data in machine_catalogs_db.items():
+        if any(word in group_k.lower() for word in m_clean.split() if len(word) > 3):
+            return data
+            
+    return {"maintenance_manual": None, "parts_catalog": None, "other_files": []}
 
 # ==========================================
 # 6. محرك Gemini لاستخراج جميع الأعطال بالكامل
@@ -489,22 +569,22 @@ def search_engine(query, top_k=5):
 
     # 3. خريطة ماكينات المجزر
     all_machines_map = {
-        "مايسترو": {"name": "ماكينة التفريغ مايسترو (Maestro)", "keys": ["maestro", "eviscerat", "0600"]},
-        "تفريغ": {"name": "ماكينة التفريغ مايسترو (Maestro)", "keys": ["maestro", "eviscerat", "0600", "unloader", "2360", "3860"]},
-        "فتح": {"name": "ماكينة الفتح والمقص (Opening Scissors)", "keys": ["opening", "scissors", "0450"]},
-        "مقص": {"name": "ماكينة الفتح والمقص (Opening Scissors)", "keys": ["opening", "scissors", "0450"]},
-        "فنت": {"name": "ماكينة قص المخرج الفنت (Vent Cutter)", "keys": ["vent", "cutter", "0100"]},
-        "رياشة": {"name": "ماكينة نزع الريش (Plucker)", "keys": ["plucker", "picking", "jm64", "2470", "0770"]},
-        "سمط": {"name": "حوض السمط (Scalder)", "keys": ["scalder", "scalding", "0560", "0990"]},
-        "سكالدر": {"name": "حوض السمط (Scalder)", "keys": ["scalder", "scalding", "0560", "0990"]},
-        "قوانص": {"name": "ماكينة تنظيف القوانص (Gizzard Processor)", "keys": ["gizzard", "peeler", "cd-6000", "1860"]},
-        "تعليق": {"name": "سير الشواكل والتعليق (Overhead Conveyor)", "keys": ["shackle", "overhead", "0230"]},
-        "شواكل": {"name": "سير الشواكل والتعليق (Overhead Conveyor)", "keys": ["shackle", "overhead", "0230"]},
-        "أرجل": {"name": "ماكينة قص الأرجل (Hock / Leg Cutter)", "keys": ["leg cutter", "hock", "3000"]},
-        "رؤوس": {"name": "ماكينة سحب الرؤوس (Head Puller)", "keys": ["head puller", "2920"]},
-        "شفاط": {"name": "مضخات الفاكيوم وتفريغ الرئة (Vacuum Pump)", "keys": ["vacuum", "lung", "robuschi", "2170", "0190"]},
-        "تغليف": {"name": "ماكينة التغليف أوتوماك (Automac)", "keys": ["automac", "wrapping", "297", "298", "a55"]},
-        "تبريد": {"name": "كمبرسورات ومنظومات التبريد", "keys": ["compressor", "chiller", "refrigeration", "2410", "airpol", "atlas"]}
+        "مايسترو": {"name": "ماكينة التفريغ مايسترو (Maestro Eviscerator 0600)", "keys": ["maestro", "eviscerat", "0600"]},
+        "تفريغ": {"name": "ماكينة التفريغ مايسترو (Maestro Eviscerator 0600)", "keys": ["maestro", "eviscerat", "0600", "unloader", "2360", "3860"]},
+        "فتح": {"name": "ماكينة الفتح والمقص (Opening Machine 0450)", "keys": ["opening", "scissors", "0450"]},
+        "مقص": {"name": "ماكينة الفتح والمقص (Opening Machine 0450)", "keys": ["opening", "scissors", "0450"]},
+        "فنت": {"name": "ماكينة قص المخرج الفنت (Vent Cutter 0100)", "keys": ["vent", "cutter", "0100"]},
+        "رياشة": {"name": "ماكينة نزع الريش (Plucker JM64 / 2470)", "keys": ["plucker", "picking", "jm64", "2470", "0770"]},
+        "سمط": {"name": "حوض السمط (Scalder 0560 / 0990)", "keys": ["scalder", "scalding", "0560", "0990"]},
+        "سكالدر": {"name": "حوض السمط (Scalder 0560 / 0990)", "keys": ["scalder", "scalding", "0560", "0990"]},
+        "قوانص": {"name": "ماكينة تنظيف القوانص (Gizzard Harvester CD-6000)", "keys": ["gizzard", "peeler", "cd-6000", "1860"]},
+        "تعليق": {"name": "سير الشواكل والناقل المعلق (Overhead Conveyor 0230)", "keys": ["shackle", "overhead", "0230"]},
+        "شواكل": {"name": "سير الشواكل والناقل المعلق (Overhead Conveyor 0230)", "keys": ["shackle", "overhead", "0230"]},
+        "أرجل": {"name": "ماكينة قص الأرجل (Hock Cutter 3000)", "keys": ["leg cutter", "hock", "3000"]},
+        "رؤوس": {"name": "ماكينة سحب الرؤوس (Head Puller 2920)", "keys": ["head puller", "2920"]},
+        "شفاط": {"name": "مضخات الفاكيوم وتفريغ الرئة (Vacuum Pumps)", "keys": ["vacuum", "lung", "robuschi", "2170", "0190"]},
+        "تغليف": {"name": "ماكينة التغليف أوتوماك (Automac 55 / 75 / 297)", "keys": ["automac", "wrapping", "297", "298", "a55"]},
+        "تبريد": {"name": "كمبرسورات ومنظومة التبريد المركزية", "keys": ["compressor", "chiller", "refrigeration", "2410", "airpol", "atlas"]}
     }
 
     is_trouble_intent = any(k in clean_q_lower for k in [
@@ -570,6 +650,31 @@ def search_engine(query, top_k=5):
 
     return [], None, None
 
+# دالة استعراض وتنزيل كتالوجات نفس الماكينة من التبويب المخصص
+def view_machine_paired_catalogs(machine_name):
+    if not machine_name or machine_name not in machine_catalogs_db:
+        return None, None, None, "⚠️ يرجى اختيار ماكينة من القائمة."
+
+    data = machine_catalogs_db[machine_name]
+    maint_pdf = data.get("maintenance_manual")
+    parts_pdf = data.get("parts_catalog")
+
+    # اختيار ملف لعرض الغلاف
+    sample_file = maint_pdf or parts_pdf
+    cover_img = render_machine_cover_image(sample_file) if sample_file else None
+
+    maint_name = os.path.basename(maint_pdf) if maint_pdf else "غير متوفر كملف منفصل"
+    parts_name = os.path.basename(parts_pdf) if parts_pdf else "غير متوفر كملف منفصل"
+
+    info_md = f"""
+### 🏭 منظومة كتالوجات: **{machine_name}**
+* 🔧 **كتالوج الصيانة والتشغيل (Maintenance Manual):** `{maint_name}`
+* ⚙️ **كتالوج قطع الغيار (Spare Parts Catalog):** `{parts_name}`
+
+> 💡 يمكنك الآن تحميل أي من الكتالوجين المرتبطين بالماكينة مباشرة من الأزرار أدناه.
+"""
+    return maint_pdf, parts_pdf, cover_img, info_md
+
 # ==========================================
 # 8. دالة المعالجة والتوجيه الرئيسية
 # ==========================================
@@ -579,7 +684,6 @@ def maintenance_copilot(query, input_image=None):
     matched_catalog_page_img = None
     response = []
 
-    # متغيرات التوثيق الدقيق لملف الإكسل
     recorded_machine_name = "غير محدد"
     recorded_part_name = "—"
     recorded_code = clean_q
@@ -599,10 +703,10 @@ def maintenance_copilot(query, input_image=None):
                 timestamp = datetime.now(tz).strftime('%Y-%m-%d %I:%M %p')
                 fail_msg = f"⚠️ *تنبيه فحص ميداني - مسلخ عزيزا*\n⏰ الوقت: {timestamp}\n📸 تم رفع صورة قطعة لم يتعرف عليها النظام تلقائياً، يرجى التحقق اليدوي."
                 send_whatsapp_alert(fail_msg)
-                return "❌ لم يتم العثور على صورة متطابقة بصرياً مع قطع المستودع المفهرسة. يرجى إدخال اسم الماكينة، كود الإنذار، أو رقم القطعة كتابةً.\n---\n📲 تم إرسال إشعار لطاقم الصيانة بالمتابعة.", None, None, None
+                return "❌ لم يتم العثور على صورة متطابقة بصرياً مع قطع المستودع المفهرسة. يرجى إدخال اسم الماكينة، كود الإنذار، أو رقم القطعة كتابةً.\n---\n📲 تم إرسال إشعار لطاقم الصيانة بالمتابعة.", None, None, None, None, None
 
     if not clean_q:
-        return "⚠️ يرجى إدخال اسم الماكينة بالعربي (مثل: السكالدر أو الفنت أو الفتح)، كود الإنذار (E002)، أو رقم القطعة.", None, None, None
+        return "⚠️ يرجى إدخال اسم الماكينة بالعربي (مثل: السكالدر أو الفنت أو الفتح)، كود الإنذار (E002)، أو رقم القطعة.", None, None, None, None, None
 
     # 2. فحص رصيد القطعة في مستودع المسلخ من Google Sheet
     inv_info = get_part_inventory_info(clean_q)
@@ -637,7 +741,7 @@ def maintenance_copilot(query, input_image=None):
         if hits:
             recorded_machine_name = deduce_machine_from_filename(hits[0]['filename'])
         else:
-            recorded_machine_name = "ماكينة التغليف أوتوماك (Automac)"
+            recorded_machine_name = "ماكينة التغليف أوتوماك (Automac 55 / 75 / 297)"
         recorded_part_name = f"إنذار عطل تشغيلي ({recorded_code})"
     elif hit_type == "trouble_table":
         recorded_machine_name = matched_term
@@ -658,10 +762,14 @@ def maintenance_copilot(query, input_image=None):
         if hits:
             recorded_machine_name = deduce_machine_from_filename(hits[0]['filename'])
 
+    # جلب الكتالوجين المرتبطين بهذه الماكينة
+    linked_catalog_files = find_linked_manuals_for_machine(recorded_machine_name)
+    maint_pdf_to_download = linked_catalog_files.get("maintenance_manual")
+    parts_pdf_to_download = linked_catalog_files.get("parts_catalog")
+
     # توثيق العملية فورياً في سجل الإكسل (CSV)
     log_search_query(clean_q, hit_type, recorded_machine_name, recorded_part_name, recorded_code, inv_info)
 
-    # إضافة كادر معلومات الماكينة والقطعة أعلى التقرير
     header_info = (
         f"> ⚙️ **الماكينة المستهدفة:** `{recorded_machine_name}`  \n"
         f"> 🏷️ **القطعة / العطل:** `{recorded_part_name}`  \n\n"
@@ -704,7 +812,7 @@ def maintenance_copilot(query, input_image=None):
             response.append(f"📖 **Technical Manual Reference:** `{hits[0]['filename']}` (Pages: {pages_str})")
             matched_catalog_page_img = render_troubleshooting_pages_stitched(hits[0]['filepath'], pages_numbers)
         else:
-            response.append(f"⚠️ لم يتم العثور على صفحات جدول الأعطال الخاصة بـ `{matched_term}`.")
+            response.append(f"⚠️️ لم يتم العثور على صفحات جدول الأعطال الخاصة بـ `{matched_term}`.")
 
     # ج) أرقام القطع والبحث العام
     else:
@@ -755,7 +863,7 @@ def maintenance_copilot(query, input_image=None):
     send_whatsapp_alert(alert_msg)
     response.append("\n---\n📲 تم إرسال إشعار فوري لطاقم الصيانة وتوثيق الماكينة والقطعة في سجل إكسل.")
 
-    return "\n".join(response), matched_warehouse_image, matched_catalog_page_img, LOG_FILE_PATH
+    return "\n".join(response), matched_warehouse_image, matched_catalog_page_img, LOG_FILE_PATH, maint_pdf_to_download, parts_pdf_to_download
 
 # ==========================================
 # 9. واجهة Gradio الرسمية
@@ -773,13 +881,13 @@ HEADER_HTML = f"""
             </div>
             <div>
                 <h1 style="margin: 0; font-size: 23px; font-weight: 800; color: #ffffff;">شركة دواجن فلسطين - مسلخ عزيزا</h1>
-                <p style="margin: 4px 0 0 0; font-size: 14px; color: #e8f5e9;">نظام الصيانة والتشخيص الهندسي الذكي (توثيق الماكينات والأعطال • مخزون المستودع المباشر)</p>
+                <p style="margin: 4px 0 0 0; font-size: 14px; color: #e8f5e9;">نظام الصيانة والتشخيص الهندسي الذكي (ربط كتالوجات الصيانة وقطع الغيار • مخزون المستودع المباشر)</p>
             </div>
         </div>
         <div style="border-right: 2px solid rgba(255,255,255,0.25); padding-right: 20px;">
             <span style="font-size: 12px; color: #c8e6c9; display: block;">إعداد وتطوير النظام:</span>
             <span style="font-size: 16px; font-weight: bold; color: #ffeb3b;">م. فادي محمود</span>
-            <span style="font-size: 12px; color: #e8f5e9; display: block;">مسؤول قسم الصيانة والأتمتة</span>
+            <span style="font-size: 12px; color: #e8f5e9; display: block;">مسؤول قسم الصيانة </span>
         </div>
     </div>
 </div>
@@ -789,39 +897,104 @@ with gr.Blocks(title="منصة الصيانة الهندسية الذكية - م
     gr.HTML(HEADER_HTML)
     
     with gr.Row():
-        status_box = gr.Markdown(f"📊 **حالة النظام:** تم تجهيز وفهرسة `{total_manuals}` كتالوج فني، وربط مخزون المستودع مع نظام التوثيق التلقائي لسجل الأعطال.")
+        status_box = gr.Markdown(f"📊 **حالة النظام:** تم تجهيز وفهرسة `{total_manuals}` كتالوج فني، مع ربط ثنائي ذكي بين (كتالوجات الصيانة 🔧) و(كتالوجات قطع الغيار ⚙️) لكل ماكينة.")
         
-    with gr.Row():
-        with gr.Column(scale=1):
-            query_input = gr.Textbox(
-                label="أدخل استعلامك: اسم الماكينة بالعربي / كود الإنذار (E002) / رقم القطعة (4 مقاطع)",
-                placeholder="أمثلة: ما هي مشاكل السكالدر | مشاكل ماكينة الفتح | ماكينة الفنت | المايسترو | E002 | W010 | 0587.0040.008.00",
-                lines=2
-            )
-            image_input = gr.Image(type="pil", label="أو ارفع صورة القطعة للتعرف البصري عليها ومطابقتها")
-            submit_btn = gr.Button("تشخيص العطل وتوثيق الماكينة والقطعة في السجل 🔍", variant="primary")
-            clear_btn = gr.Button("مسح الحقول")
-            
-            download_log_file = gr.File(
-                label="📊 تحميل سجل الأعطال والماكينات (Excel / CSV)",
-                interactive=False
-            )
-            
-        with gr.Column(scale=1):
-            output_box = gr.Markdown(label="تقرير الفحص الفني وجدول الأعطال والمخزون")
+    with gr.Tabs():
+        # التبويب الأول: البحث الذكي والتشخيص
+        with gr.Tab("🔍 التشخيص الهندسي والبحث الفوري"):
             with gr.Row():
-                matched_warehouse_img_output = gr.Image(type="filepath", label="صورة الماكينة الكاملة / قطعة المستودع")
-                matched_catalog_page_output = gr.Image(type="filepath", label="صفحات جدول الأعطال الكاملة (مدمجة)")
-            
-    submit_btn.click(
-        fn=maintenance_copilot,
-        inputs=[query_input, image_input],
-        outputs=[output_box, matched_warehouse_img_output, matched_catalog_page_output, download_log_file]
-    )
-    clear_btn.click(
-        lambda: ("", None, "", None, None, None),
-        outputs=[query_input, image_input, output_box, matched_warehouse_img_output, matched_catalog_page_output, download_log_file]
-    )
+                with gr.Column(scale=1):
+                    query_input = gr.Textbox(
+                        label="أدخل استعلامك: اسم الماكينة بالعربي / كود الإنذار (E002) / رقم القطعة (4 مقاطع)",
+                        placeholder="أمثلة: ما هي مشاكل السكالدر | مشاكل ماكينة الفتح | ماكينة الفنت | المايسترو | E002 | W010 | 0587.0040.008.00",
+                        lines=2
+                    )
+                    image_input = gr.Image(type="pil", label="أو ارفع صورة القطعة للتعرف البصري عليها ومطابقتها")
+                    submit_btn = gr.Button("تشخيص العطل وتوثيق العملية في السجل 🔍", variant="primary")
+                    clear_btn = gr.Button("مسح الحقول")
+                    
+                    download_log_file = gr.File(
+                        label="📊 تحميل سجل الأعطال والماكينات (Excel / CSV)",
+                        interactive=False
+                    )
+                    with gr.Row():
+                        download_searched_maint = gr.File(
+                            label="🔧 كتالوج الصيانة للماكينة المستهدفة (PDF)",
+                            interactive=False
+                        )
+                        download_searched_parts = gr.File(
+                            label="⚙️ كتالوج قطع الغيار للماكينة المستهدفة (PDF)",
+                            interactive=False
+                        )
+                    
+                with gr.Column(scale=1):
+                    output_box = gr.Markdown(label="تقرير الفحص الفني وجدول الأعطال والمخزون")
+                    with gr.Row():
+                        matched_warehouse_img_output = gr.Image(type="filepath", label="صورة الماكينة الكاملة / قطعة المستودع")
+                        matched_catalog_page_output = gr.Image(type="filepath", label="صفحات جدول الأعطال الكاملة (مدمجة)")
+                    
+            submit_btn.click(
+                fn=maintenance_copilot,
+                inputs=[query_input, image_input],
+                outputs=[
+                    output_box, 
+                    matched_warehouse_img_output, 
+                    matched_catalog_page_output, 
+                    download_log_file, 
+                    download_searched_maint, 
+                    download_searched_parts
+                ]
+            )
+            clear_btn.click(
+                lambda: ("", None, "", None, None, None, None, None),
+                outputs=[
+                    query_input, 
+                    image_input, 
+                    output_box, 
+                    matched_warehouse_img_output, 
+                    matched_catalog_page_output, 
+                    download_log_file, 
+                    download_searched_maint, 
+                    download_searched_parts
+                ]
+            )
+
+        # التبويب الثاني: مكتبة الماكينات المزدوجة (كتالوج الصيانة + كتالوج قطع الغيار)
+        with gr.Tab("📚 مكتبة الماكينات (كتالوج الصيانة + قطع الغيار معاً)"):
+            with gr.Row():
+                with gr.Column(scale=1):
+                    machine_dropdown = gr.Dropdown(
+                        choices=available_machines_list,
+                        label="اختر الماكينة لعرض كتالوج الصيانة وكتالوج قطع الغيار المرتبطين بها:",
+                        value=available_machines_list[0] if available_machines_list else None
+                    )
+                    view_machine_btn = gr.Button("استعراض منظومة الكتالوجات المرتبطة 📖", variant="secondary")
+                    machine_info_output = gr.Markdown()
+                    with gr.Row():
+                        download_machine_maint = gr.File(
+                            label="🔧 تحميل كتالوج الصيانة والتشغيل (User/Maintenance PDF)",
+                            interactive=False
+                        )
+                        download_machine_parts = gr.File(
+                            label="⚙️ تحميل كتالوج قطع الغيار والرسم المنفجر (Parts PDF)",
+                            interactive=False
+                        )
+                with gr.Column(scale=1):
+                    machine_cover_output = gr.Image(
+                        type="filepath", 
+                        label="صورة غلاف الماكينة من الكتالوج الأصلي"
+                    )
+
+            view_machine_btn.click(
+                fn=view_machine_paired_catalogs,
+                inputs=[machine_dropdown],
+                outputs=[download_machine_maint, download_machine_parts, machine_cover_output, machine_info_output]
+            )
+            machine_dropdown.change(
+                fn=view_machine_paired_catalogs,
+                inputs=[machine_dropdown],
+                outputs=[download_machine_maint, download_machine_parts, machine_cover_output, machine_info_output]
+            )
 
 if __name__ == "__main__":
     demo.launch(
