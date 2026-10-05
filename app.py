@@ -26,7 +26,7 @@ IMAGE_DIR = os.path.join(BASE_DIR, "Real_Parts_Images")
 
 LOG_FILE_PATH = "/tmp/maintenance_search_log.csv"
 
-# رابط جدول Google Sheets للقراءة المباشرة
+# رابط جدول Google Sheets للقراءة
 SHEET_ID = "1_scf-CUSouwQvJan4d12UuC7LX8eHC7E4YAjC41q2r4"
 GOOGLE_SHEET_CSV_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv"
 
@@ -272,6 +272,7 @@ def get_part_inventory_info(part_query):
     if not inv_data or not part_query:
         return None
 
+    # 1. مطابقة الكود
     clean_target = clean_part_key(part_query)
     if clean_target in inv_data:
         return inv_data[clean_target]
@@ -280,26 +281,50 @@ def get_part_inventory_info(part_query):
         if len(clean_target) >= 6 and (clean_target in k or k in clean_target):
             return info
 
+    # 2. مطابقة الاسم
+    query_str = str(part_query).strip().lower()
+    for k, info in inv_data.items():
+        if query_str in info["name"].lower():
+            return info
+
     return None
+
+def get_parts_selection_list():
+    """توليد قائمة خيارات للبحث بالاسم والكود معاً"""
+    inv_data = fetch_inventory_data()
+    choices = []
+    for item in inv_data.values():
+        name_clean = item["name"] if item["name"] else "بدون اسم"
+        choices.append(f"{name_clean} | {item['raw_code']}")
+    return sorted(choices)
 
 # ==========================================
 # 4. محرك تعديل وإضافة قطع الغيار التفاعلي في Google Sheets
 # ==========================================
-def withdraw_part_from_sheet(part_code_input, qty_to_withdraw, technician_name, machine_destination):
-    if not part_code_input or not str(part_code_input).strip():
-        return "⚠️ يرجى إدخال كود القطعة المراد سحبها."
+def withdraw_part_from_sheet(selected_part, custom_code_in, qty_to_withdraw, technician_name, machine_destination):
+    """دالة سحب / صرف قطعة غيار وتحديث الرصيد فورياً بالاسم أو الكود"""
+    code_to_use = ""
+    name_to_use = ""
     
-    clean_code = str(part_code_input).strip()
+    if selected_part and "|" in selected_part:
+        name_to_use = selected_part.split("|")[0].strip()
+        code_to_use = selected_part.split("|")[1].strip()
+    elif custom_code_in and custom_code_in.strip():
+        code_to_use = custom_code_in.strip()
+    else:
+        return "⚠️ يرجى اختيار قطعة من القائمة أو إدخال كود/اسم القطعة."
+    
     try:
         qty_num = float(qty_to_withdraw)
         if qty_num <= 0:
-            return "⚠️ يرجى تحديد كمية سحب صالحة أكبر من الصفر."
+            return "⚠️ يرجى تحديد كمية صالحة أكبر من الصفر."
     except Exception:
         return "⚠️ الكمية المدخلة غير صحيحة."
 
     payload = {
         "action": "withdraw",
-        "part_code": clean_code,
+        "part_code": code_to_use,
+        "part_name": name_to_use,
         "qty": qty_num
     }
 
@@ -315,23 +340,25 @@ def withdraw_part_from_sheet(part_code_input, qty_to_withdraw, technician_name, 
 
     tz = pytz.timezone('Asia/Hebron')
     timestamp = datetime.now(tz).strftime('%Y-%m-%d %I:%M %p')
-    log_search_query(f"صرف رصيد: {clean_code} (كمية: {qty_num})", "stock_out", machine_destination, f"الفني: {technician_name}", clean_code, {"qty": f"-{qty_num}", "location": "صالة الإنتاج"})
+    log_search_query(f"صرف رصيد: {code_to_use} (كمية: {qty_num})", "stock_out", machine_destination, f"الفني: {technician_name}", code_to_use, {"qty": f"-{qty_num}", "location": "صالة الإنتاج"})
 
     alert_msg = (
         f"📤 *إشعار صرف قطعة غيار من المستودع*\n"
         f"🏢 مسلخ عزيزا - قسم الصيانة والأتمتة\n"
         f"⏰ الوقت: {timestamp}\n"
-        f"🔹 كود القطعة: `{clean_code}`\n"
+        f"🔹 القطعة: *{name_to_use}*\n"
+        f"🔹 الكود: `{code_to_use}`\n"
         f"🔹 الكمية المصروفة: `{qty_num}`\n"
         f"👷 الفني المستلم: {technician_name if technician_name else 'فني الوردية'}\n"
         f"🏭 الماكينة: {machine_destination if machine_destination else 'غير محدد'}\n"
-        f"✅ تم تعديل الرصيد تلقائياً في Google Sheets على Google Drive."
+        f"✅ تم تعديل الرصيد تلقائياً في Google Sheets على الدرايف."
     )
     send_whatsapp_alert(alert_msg)
 
-    return f"✅ **تم سحب القطعة بنجاح!**\n- كود القطعة: `{clean_code}`\n- الكمية المصروفة: `{qty_num}`\n- تم تعديل الرصيد وتحديث Google Sheets على الدرايف فورياً."
+    return f"✅ **تم سحب القطعة بنجاح!**\n- القطعة: **{name_to_use}** (`{code_to_use}`)\n- الكمية المصروفة: `{qty_num}`\n- تم تعديل الرصيد وتحديث Google Sheets على الدرايف فورياً."
 
 def add_new_part_to_sheet(raw_code, part_name, initial_qty, storage_location, min_stock):
+    """دالة إضافة قطعة غيار جديدة بالكامل أو توريد رصيد بالاسم والكود"""
     if not raw_code or not str(raw_code).strip():
         return "⚠️ يرجى إدخال كود القطعة."
     if not part_name or not str(part_name).strip():
@@ -345,7 +372,7 @@ def add_new_part_to_sheet(raw_code, part_name, initial_qty, storage_location, mi
         qty_num = float(initial_qty) if initial_qty else 0
         min_num = float(min_stock) if min_stock else 2
     except Exception:
-        return "⚠️ يرجى التأكد من كتابة الأرقام بشكل صحيح."
+        return "⚠️️ يرجى التأكد من كتابة الأرقام بشكل صحيح."
 
     payload = {
         "action": "add_or_update",
@@ -385,6 +412,18 @@ def add_new_part_to_sheet(raw_code, part_name, initial_qty, storage_location, mi
 
     return f"✅ **تم تسجيل وتحديث القطعة بنجاح في Google Sheets!**\n- الكود: `{clean_code}`\n- الاسم: **{clean_name}**\n- الرصيد: `{qty_num}` (الرف: {loc})."
 
+def on_part_selection_change(selected_entry):
+    """تحديث حقول العرض فور اختيار قطعة بالاسم من القائمة"""
+    if not selected_entry or "|" not in selected_entry:
+        return "", "⚪ اختر قطعة لعرض بطاقتها"
+    
+    code = selected_entry.split("|")[1].strip()
+    inv_info = get_part_inventory_info(code)
+    if inv_info:
+        card = f"📦 **اسم القطعة:** {inv_info['name']} | **الرصيد المتوفر حالياً:** `{inv_info['qty']}` | **موقع الرف:** `{inv_info['location']}`"
+        return code, card
+    return code, ""
+
 # ==========================================
 # 5. محرك تحليلات ومؤشرات الأداء (KPI Engine)
 # ==========================================
@@ -410,13 +449,13 @@ def generate_kpi_dashboard_data():
         if qty == 0:
             out_of_stock_count += 1
             status_text = "🔴 نافد تماماً (Out of Stock)"
-            display_choice = f"{item['raw_code']} | {item['name']} (رصيد: 0)"
+            display_choice = f"{item['name']} | {item['raw_code']} (رصيد: 0)"
             critical_parts_choices.append(display_choice)
             critical_table_rows.append((item['raw_code'], item['name'], item['qty'], item.get('min_stock', '2'), item['location'], status_text))
         elif qty <= min_stk:
             low_stock_count += 1
             status_text = "🟡 رصيد حرج (Below Minimum)"
-            display_choice = f"{item['raw_code']} | {item['name']} (رصيد: {item['qty']})"
+            display_choice = f"{item['name']} | {item['raw_code']} (رصيد: {item['qty']})"
             critical_parts_choices.append(display_choice)
             critical_table_rows.append((item['raw_code'], item['name'], item['qty'], item.get('min_stock', '2'), item['location'], status_text))
         else:
@@ -501,11 +540,11 @@ def send_instant_purchase_order(selected_part_entry):
     if not selected_part_entry:
         return "⚠️ يرجى اختيار قطعة من قائمة القطع الحرجة."
 
-    raw_code = selected_part_entry.split("|")[0].strip()
-    inv_info = get_part_inventory_info(raw_code)
+    part_code = selected_part_entry.split("|")[1].split("(")[0].strip() if "|" in selected_part_entry else selected_part_entry
+    inv_info = get_part_inventory_info(part_code)
     
     if not inv_info:
-        return f"⚠️ تعذر العثور على بيانات القطعة `{raw_code}`."
+        return f"⚠️ تعذر العثور على بيانات القطعة `{part_code}`."
 
     tz = pytz.timezone('Asia/Hebron')
     timestamp = datetime.now(tz).strftime('%Y-%m-%d %I:%M %p')
@@ -1247,7 +1286,7 @@ HEADER_HTML = """
             </div>
             <div>
                 <h1 style="margin: 0; font-size: 23px; font-weight: 800; color: #ffffff;">شركة دواجن فلسطين - مسلخ عزيزا</h1>
-                <p style="margin: 4px 0 0 0; font-size: 14px; color: #e8f5e9;">منصة الصيانة الهندسية الذكية (إدارة حركة المستودع • ربط Google Sheets • قرارات التوريد)</p>
+                <p style="margin: 4px 0 0 0; font-size: 14px; color: #e8f5e9;">منصة الصيانة الهندسية الذكية (إدارة حركة المستودع بالاسم والكود • ربط Google Sheets • قرارات التوريد)</p>
             </div>
         </div>
         <div style="border-right: 2px solid rgba(255,255,255,0.25); padding-right: 20px;">
@@ -1265,7 +1304,7 @@ with gr.Blocks(title="منصة الصيانة الهندسية الذكية - م
     gr.HTML(HEADER_HTML)
     
     with gr.Row():
-        status_box = gr.Markdown(f"📊 **حالة النظام:** تم تجهيز وفهرسة `{total_manuals}` كتالوج فني، وتفعيل إدارة حركات المخزون الثنائية مع Google Sheets ومؤشرات الأداء اللحظية (KPIs).")
+        status_box = gr.Markdown(f"📊 **حالة النظام:** تم تجهيز وفهرسة `{total_manuals}` كتالوج فني، وتفعيل البحث بالاسم والكود لإدارة المخزون مع Google Sheets ومؤشرات الأداء اللحظية (KPIs).")
         
     with gr.Tabs():
         # التبويب الأول: البحث الذكي والتشخيص
@@ -1301,18 +1340,28 @@ with gr.Blocks(title="منصة الصيانة الهندسية الذكية - م
                         matched_warehouse_img_output = gr.Image(type="filepath", label="صورة الماكينة الكاملة / قطعة المستودع")
                         matched_catalog_page_output = gr.Image(type="filepath", label="صفحات جدول الأعطال الكاملة (مدمجة)")
 
-        # التبويب الثاني: إدارة حركات المخزون وصرف/إضافة قطع الغيار المباشرة
-        with gr.Tab("📦 إدارة حركات المخزون (صرف • توريد • إدخال صنف جديد)"):
+        # التبويب الثاني: إدارة حركات المخزون وصرف/إضافة قطع الغيار بالاسم والكود
+        with gr.Tab("📦 إدارة حركات المخزون (بحث بالاسم • صرف • توريد)") as stock_tab:
             with gr.Row():
+                # نموذج صرف / سحب قطعة غيار من المستودع
                 with gr.Column(scale=1):
                     gr.Markdown("### 📤 صرف / سحب قطعة غيار من المستودع (Stock Issue)")
-                    withdraw_code_in = gr.Textbox(label="كود القطعة المسحوبة (Part No):", placeholder="مثال: 0587.0040.008.00")
+                    
+                    # قائمة البحث والاختيار بالاسم والكود معاً
+                    part_search_dropdown = gr.Dropdown(
+                        label="🔍 ابحث واختر القطعة باسمها المخزن في Google Sheets:",
+                        choices=[],
+                        filterable=True
+                    )
+                    part_info_display = gr.Markdown("⚪ اختر قطعة لعرض بطاقتها ورصيدها")
+                    withdraw_code_in = gr.Textbox(label="كود القطعة المسحوبة (Part No):", placeholder="يتم ملؤه تلقائياً أو أدخله يدوياً")
                     withdraw_qty_in = gr.Number(label="الكمية المراد سحبها:", value=1, precision=0)
                     withdraw_tech_in = gr.Textbox(label="اسم الفني المستلم:", placeholder="اسم الفني أو المشرف")
                     withdraw_mach_in = gr.Dropdown(choices=available_machines_list, label="الماكينة المستهدفة بالصيانة:", value=available_machines_list[0] if available_machines_list else None)
                     withdraw_btn = gr.Button("خصم من المستودع وتحديث Google Sheet 📤", variant="primary")
                     withdraw_status_out = gr.Markdown()
 
+                # نموذج إضافة صنف جديد أو توريد رصيد إضافي
                 with gr.Column(scale=1):
                     gr.Markdown("### 📥 إدخال صنف جديد أو توريد رصيد (Stock Inward)")
                     new_code_in = gr.Textbox(label="كود القطعة (Part No):", placeholder="أدخل كود القطعة المعتمد")
@@ -1323,9 +1372,16 @@ with gr.Blocks(title="منصة الصيانة الهندسية الذكية - م
                     add_part_btn = gr.Button("إدراج القطعة وتحديث Google Sheet 📥", variant="secondary")
                     add_part_status_out = gr.Markdown()
 
+            # تفاعل الاختيار التلقائي للقطعة
+            part_search_dropdown.change(
+                fn=on_part_selection_change,
+                inputs=[part_search_dropdown],
+                outputs=[withdraw_code_in, part_info_display]
+            )
+
             withdraw_btn.click(
                 fn=withdraw_part_from_sheet,
-                inputs=[withdraw_code_in, withdraw_qty_in, withdraw_tech_in, withdraw_mach_in],
+                inputs=[part_search_dropdown, withdraw_code_in, withdraw_qty_in, withdraw_tech_in, withdraw_mach_in],
                 outputs=[withdraw_status_out]
             )
 
@@ -1333,6 +1389,12 @@ with gr.Blocks(title="منصة الصيانة الهندسية الذكية - م
                 fn=add_new_part_to_sheet,
                 inputs=[new_code_in, new_name_in, new_qty_in, new_loc_in, new_min_in],
                 outputs=[add_part_status_out]
+            )
+
+            # تحديث قائمة الأسماء عند الدخول للتبويب
+            stock_tab.select(
+                fn=lambda: gr.update(choices=get_parts_selection_list()),
+                outputs=[part_search_dropdown]
             )
 
         # التبويب الثالث: لوحة الصيانة الدورية وقوائم الفحص (Checklists)
