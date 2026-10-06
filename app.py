@@ -30,7 +30,7 @@ LOG_FILE_PATH = "/tmp/maintenance_search_log.csv"
 SHEET_ID = "1_scf-CUSouwQvJan4d12UuC7LX8eHC7E4YAjC41q2r4"
 GOOGLE_SHEET_CSV_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv"
 
-# رابط الويب هوك الخاص بك لتحديث وإضافة القطع في الشيت تلقائياً
+# رابط الويب هوك الخاص بك لتحديث وإضافة القطع والأرشفة الشهرية
 SHEET_WEBHOOK_URL = os.environ.get(
     "SHEET_WEBHOOK_URL", 
     "https://script.google.com/macros/s/AKfycbwKYnWN2z8TQrV-Qb8CuO1YW_SbpQrVjHJSPriSzBwXDCgyaQNc59jqGTykqNY9e5LAAg/exec"
@@ -141,8 +141,8 @@ sync_data_from_gcs()
 ID_INSTANCE = "710722737613"
 API_TOKEN_INSTANCE = "8902219901b2411cb1ebfa944bbfc3d7d499d671111c4fe18e"
 
-ALERT_GROUP_ID = "970599431267@c.us"
-PURCHASING_MANAGER_PHONE = "972595470033@c.us"
+ALERT_GROUP_ID = "970599431267@c.us" # رقم المهندس فادي محمود (المشرف المباشر)
+PURCHASING_MANAGER_PHONE = "972595470033@c.us" # مسؤول المشتريات أحمد حطاب
 
 def send_whatsapp_alert(message, target_phone=None):
     if not API_TOKEN_INSTANCE or "YOUR_GREEN_API" in API_TOKEN_INSTANCE:
@@ -272,7 +272,6 @@ def get_part_inventory_info(part_query):
     if not inv_data or not part_query:
         return None
 
-    # 1. مطابقة الكود
     clean_target = clean_part_key(part_query)
     if clean_target in inv_data:
         return inv_data[clean_target]
@@ -281,7 +280,6 @@ def get_part_inventory_info(part_query):
         if len(clean_target) >= 6 and (clean_target in k or k in clean_target):
             return info
 
-    # 2. مطابقة الاسم
     query_str = str(part_query).strip().lower()
     for k, info in inv_data.items():
         if query_str in info["name"].lower():
@@ -290,7 +288,6 @@ def get_part_inventory_info(part_query):
     return None
 
 def get_parts_selection_list():
-    """توليد قائمة خيارات للبحث بالاسم والكود معاً"""
     inv_data = fetch_inventory_data()
     choices = []
     for item in inv_data.values():
@@ -299,10 +296,10 @@ def get_parts_selection_list():
     return sorted(choices)
 
 # ==========================================
-# 4. محرك تعديل وإضافة قطع الغيار التفاعلي في Google Sheets
+# 4. محرك تعديل وإضافة قطع الغيار التفاعلي مع الأرشفة الشهرية وتنبيه الصفر
 # ==========================================
 def withdraw_part_from_sheet(selected_part, custom_code_in, qty_to_withdraw, technician_name, machine_destination):
-    """دالة سحب / صرف قطعة غيار وتحديث الرصيد فورياً بالاسم أو الكود"""
+    """دالة سحب / صرف قطعة غيار وتحديث الرصيد مع الأرشفة الشهرية وإرسال تنبيه واتساب مباشر عند وصول الرصيد إلى صفر"""
     code_to_use = ""
     name_to_use = ""
     
@@ -312,56 +309,138 @@ def withdraw_part_from_sheet(selected_part, custom_code_in, qty_to_withdraw, tec
     elif custom_code_in and custom_code_in.strip():
         code_to_use = custom_code_in.strip()
     else:
-        return "⚠️ يرجى اختيار قطعة من القائمة أو إدخال كود/اسم القطعة."
+        gr.Warning("⚠️ يرجى اختيار قطعة من القائمة أو إدخال كود/اسم القطعة.")
+        return "⚠️ يرجى اختيار قطعة من القائمة أو إدخال كود/اسم القطعة.", gr.update(visible=False)
     
     try:
         qty_num = float(qty_to_withdraw)
         if qty_num <= 0:
-            return "⚠️ يرجى تحديد كمية صالحة أكبر من الصفر."
+            gr.Warning("⚠️️ يرجى تحديد كمية صالحة أكبر من الصفر.")
+            return "⚠️ يرجى تحديد كمية صالحة أكبر من الصفر.", gr.update(visible=False)
     except Exception:
-        return "⚠️ الكمية المدخلة غير صحيحة."
+        gr.Warning("⚠️ الكمية المدخلة غير صحيحة.")
+        return "⚠️ الكمية المدخلة غير صحيحة.", gr.update(visible=False)
+
+    # 1. الاستعلام المسبق عن الرصيد الحالي لمعرفة ما إذا كان الصرف سيصل لصفر
+    inv_info = get_part_inventory_info(code_to_use)
+    if not inv_info and name_to_use:
+        inv_info = get_part_inventory_info(name_to_use)
+
+    current_qty = 0
+    if inv_info:
+        try:
+            current_qty = float(re.sub(r'[^0-9.]', '', str(inv_info["qty"])))
+            if not name_to_use:
+                name_to_use = inv_info.get("name", "")
+        except Exception:
+            current_qty = 0
+
+    tz = pytz.timezone('Asia/Hebron')
+    now = datetime.now(tz)
+    timestamp = now.strftime('%Y-%m-%d %I:%M %p')
+    current_month_sheet = f"Log_{now.strftime('%Y_%m')}" # اسم ورقة الأرشيف الشهرية التلقائية
 
     payload = {
         "action": "withdraw",
         "part_code": code_to_use,
         "part_name": name_to_use,
-        "qty": qty_num
+        "qty": qty_num,
+        "technician": technician_name if technician_name else "فني الوردية",
+        "machine": machine_destination if machine_destination else "غير محدد",
+        "month_sheet": current_month_sheet
     }
 
+    new_stock = max(0, current_qty - qty_num)
     try:
         resp = requests.post(SHEET_WEBHOOK_URL, json=payload, timeout=12)
         res_data = resp.json()
         if res_data.get("status") == "error":
-            return f"❌ خطأ من Google Sheets: {res_data.get('message')}"
+            gr.Warning(f"❌ خطأ من Google Sheets: {res_data.get('message')}")
+            return f"❌ خطأ من Google Sheets: {res_data.get('message')}", gr.update(visible=False)
+        if "new_stock" in res_data:
+            new_stock = float(res_data["new_stock"])
     except Exception as err:
         print(f"[!] Webhook error: {err}")
 
     fetch_inventory_data(force_refresh=True)
 
-    tz = pytz.timezone('Asia/Hebron')
-    timestamp = datetime.now(tz).strftime('%Y-%m-%d %I:%M %p')
-    log_search_query(f"صرف رصيد: {code_to_use} (كمية: {qty_num})", "stock_out", machine_destination, f"الفني: {technician_name}", code_to_use, {"qty": f"-{qty_num}", "location": "صالة الإنتاج"})
+    log_search_query(
+        f"صرف رصيد: {code_to_use} (كمية: {qty_num})", 
+        "stock_out", 
+        machine_destination, 
+        f"الفني: {technician_name}", 
+        code_to_use, 
+        {"qty": f"-{qty_num}", "location": inv_info.get("location", "مستودع المسلخ") if inv_info else "مستودع المسلخ"}
+    )
 
-    alert_msg = (
+    # 2. رسالة إشعار الصرف الاعتيادية
+    standard_msg = (
         f"📤 *إشعار صرف قطعة غيار من المستودع*\n"
         f"🏢 مسلخ عزيزا - قسم الصيانة والأتمتة\n"
         f"⏰ الوقت: {timestamp}\n"
         f"🔹 القطعة: *{name_to_use}*\n"
         f"🔹 الكود: `{code_to_use}`\n"
         f"🔹 الكمية المصروفة: `{qty_num}`\n"
+        f"📉 الرصيد المتبقي: `{new_stock}` قطعة\n"
         f"👷 الفني المستلم: {technician_name if technician_name else 'فني الوردية'}\n"
         f"🏭 الماكينة: {machine_destination if machine_destination else 'غير محدد'}\n"
-        f"✅ تم تعديل الرصيد تلقائياً في Google Sheets على الدرايف."
+        f"📁 الأرشفة: تم التوثيق في كشف شهر `{current_month_sheet}` وتحديث الرصيد العام."
     )
-    send_whatsapp_alert(alert_msg)
+    send_whatsapp_alert(standard_msg)
 
-    return f"✅ **تم سحب القطعة بنجاح!**\n- القطعة: **{name_to_use}** (`{code_to_use}`)\n- الكمية المصروفة: `{qty_num}`\n- تم تعديل الرصيد وتحديث Google Sheets على الدرايف فورياً."
+    # 3. الشرط الحاسم: إذا وصل الرصيد إلى صفر (تنبيه فوري لطلب الشراء على واتساب م. فادي + تنبيه أحمر للفني)
+    if new_stock <= 0:
+        gr.Warning(f"🚨 تنبيه عاجل: لقد نفد رصيد القطعة ({name_to_use}) بالكامل (الرصيد: 0)! تم إرسال تنبيه فوري للمشرف.")
+        
+        zero_alert_msg = (
+            f"🚨🚨 *تنبيه نفاد مخزون طارئ (الرصيد وصل إلى صفر)* 🚨🚨\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"🏢 *شركة دواجن فلسطين - مسلخ عزيزا*\n"
+            f"👤 *إلى المشرف:* م. فادي محمود\n"
+            f"⏰ *التوقيت:* {timestamp}\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"⚠️ *بيانات القطعة المنتهية:*\n"
+            f"🔹 *رقم القطعة (Part No):* `{code_to_use}`\n"
+            f"🔹 *اسم القطعة:* *{name_to_use}*\n"
+            f"📍 *موقع الرف:* {inv_info.get('location', 'مستودع المسلخ') if inv_info else 'مستودع المسلخ'}\n"
+            f"📉 *الرصيد الفعلي الحالي:* `0` قطع (نافدة بالكامل)\n"
+            f"👷 *قام بالصرف الأخير:* {technician_name if technician_name else 'فني الوردية'}\n"
+            f"🏭 *الماكينة المستلمة:* {machine_destination if machine_destination else 'غير محدد'}\n\n"
+            f"⚡ *الإجراء المطلوب:* يرجى إصدار طلب توريد / شراء عاجل لتفادي توقف خطوط الإنتاج والذبح."
+        )
+        send_whatsapp_alert(zero_alert_msg, target_phone=ALERT_GROUP_ID) # إرسال إلى رقمك الخاص مباشرة
+
+        alert_banner = f"""
+        <div style="background-color: #fef2f2; border: 2px solid #ef4444; border-right: 8px solid #dc2626; padding: 18px; border-radius: 12px; margin-top: 15px; direction: rtl; text-align: right;">
+            <div style="display: flex; align-items: center; gap: 12px;">
+                <span style="font-size: 32px;">🚨</span>
+                <div>
+                    <h3 style="color: #991b1b; margin: 0; font-size: 16px; font-weight: 900;">تحذير نفاد المخزون بالكامل (الرصيد: 0)</h3>
+                    <p style="color: #b91c1c; margin: 6px 0 0 0; font-size: 13px;">
+                        تم سحب آخر قطعة من: <strong>{name_to_use}</strong> (كود: <code>{code_to_use}</code>). الرصيد الحالي على الرف هو <strong>صفر</strong>.
+                    </p>
+                    <p style="color: #7f1d1d; font-size: 11px; margin-top: 4px; font-weight: bold;">
+                        📲 تم إرسال إشعار نفاد فوري لـ م. فادي محمود على الواتساب لإصدار أمر شراء عاجل.
+                    </p>
+                </div>
+            </div>
+        </div>
+        """
+        success_msg = f"⚠️ **تم سحب القطعة بنجاح، ولكن الرصيد وصل إلى صفر!**\n- القطعة: **{name_to_use}** (`{code_to_use}`)\n- الكمية المسحوبة: `{qty_num}`\n- تم التوثيق في الأرشيف الشهري `{current_month_sheet}`."
+        return success_msg, gr.update(value=alert_banner, visible=True)
+
+    else:
+        gr.Info(f"✅ تم صرف {qty_num} قطعة بنجاح. الرصيد المتبقي: {new_stock}")
+        success_msg = f"✅ **تم سحب القطعة بنجاح!**\n- القطعة: **{name_to_use}** (`{code_to_use}`)\n- الكمية المصروفة: `{qty_num}`\n- الرصيد المتبقي في المستودع: `{new_stock}`\n- تم التوثيق في كشف شهر `{current_month_sheet}`."
+        return success_msg, gr.update(visible=False)
 
 def add_new_part_to_sheet(raw_code, part_name, initial_qty, storage_location, min_stock):
-    """دالة إضافة قطعة غيار جديدة بالكامل أو توريد رصيد بالاسم والكود"""
+    """دالة إضافة قطعة غيار جديدة أو توريد رصيد مع التوثيق في الأرشيف الشهري"""
     if not raw_code or not str(raw_code).strip():
+        gr.Warning("⚠️ يرجى إدخال كود القطعة.")
         return "⚠️ يرجى إدخال كود القطعة."
     if not part_name or not str(part_name).strip():
+        gr.Warning("⚠️ يرجى إدخال اسم وتوصيف القطعة.")
         return "⚠️ يرجى إدخال اسم وتوصيف القطعة."
 
     clean_code = str(raw_code).strip()
@@ -372,7 +451,13 @@ def add_new_part_to_sheet(raw_code, part_name, initial_qty, storage_location, mi
         qty_num = float(initial_qty) if initial_qty else 0
         min_num = float(min_stock) if min_stock else 2
     except Exception:
-        return "⚠️️ يرجى التأكد من كتابة الأرقام بشكل صحيح."
+        gr.Warning("⚠ يرجى التأكد من كتابة الأرقام بشكل صحيح.")
+        return "⚠ يرجى التأكد من كتابة الأرقام بشكل صحيح."
+
+    tz = pytz.timezone('Asia/Hebron')
+    now = datetime.now(tz)
+    timestamp = now.strftime('%Y-%m-%d %I:%M %p')
+    current_month_sheet = f"Log_{now.strftime('%Y_%m')}"
 
     payload = {
         "action": "add_or_update",
@@ -381,13 +466,17 @@ def add_new_part_to_sheet(raw_code, part_name, initial_qty, storage_location, mi
         "part_name": clean_name,
         "qty": qty_num,
         "location": loc,
-        "min_stock": min_num
+        "min_stock": min_num,
+        "technician": "مستودع الصيانة / توريد",
+        "machine": "المستودع الرئيسي",
+        "month_sheet": current_month_sheet
     }
 
     try:
         resp = requests.post(SHEET_WEBHOOK_URL, json=payload, timeout=12)
         res_data = resp.json()
         if res_data.get("status") == "error":
+            gr.Warning(f"❌ خطأ من Google Sheets: {res_data.get('message')}")
             return f"❌ خطأ من Google Sheets: {res_data.get('message')}"
     except Exception as err:
         print(f"[!] Webhook error: {err}")
@@ -396,8 +485,6 @@ def add_new_part_to_sheet(raw_code, part_name, initial_qty, storage_location, mi
 
     log_search_query(f"إضافة/توريد قطعة: {clean_code}", "stock_in", "المستودع الرئيسي", clean_name, clean_code, {"qty": f"+{qty_num}", "location": loc})
 
-    tz = pytz.timezone('Asia/Hebron')
-    timestamp = datetime.now(tz).strftime('%Y-%m-%d %I:%M %p')
     alert_msg = (
         f"📥 *إشعار إدخال/توريد قطعة غيار جديدة*\n"
         f"🏢 مسلخ عزيزا - مستودع الصيانة\n"
@@ -406,21 +493,22 @@ def add_new_part_to_sheet(raw_code, part_name, initial_qty, storage_location, mi
         f"🔹 اسم الصنف: *{clean_name}*\n"
         f"🔹 الكمية المضافة: `{qty_num}`\n"
         f"🔹 موقع الرف: {loc}\n"
-        f"✅ تم الحفظ فورياً في Google Sheets المربوط على الدرايف."
+        f"📁 الأرشفة: تم التوثيق في كشف شهر `{current_month_sheet}` وتحديث الرصيد الكلي."
     )
     send_whatsapp_alert(alert_msg)
 
-    return f"✅ **تم تسجيل وتحديث القطعة بنجاح في Google Sheets!**\n- الكود: `{clean_code}`\n- الاسم: **{clean_name}**\n- الرصيد: `{qty_num}` (الرف: {loc})."
+    gr.Info(f"✅ تم توريد وإضافة القطعة ({clean_name}) بنجاح.")
+    return f"✅ **تم تسجيل وتحديث القطعة بنجاح!**\n- الكود: `{clean_code}`\n- الاسم: **{clean_name}**\n- الكمية المضافة: `{qty_num}`\n- موثقة في كشف الأرشيف الشهري `{current_month_sheet}`."
 
 def on_part_selection_change(selected_entry):
-    """تحديث حقول العرض فور اختيار قطعة بالاسم من القائمة"""
     if not selected_entry or "|" not in selected_entry:
         return "", "⚪ اختر قطعة لعرض بطاقتها"
     
     code = selected_entry.split("|")[1].strip()
     inv_info = get_part_inventory_info(code)
     if inv_info:
-        card = f"📦 **اسم القطعة:** {inv_info['name']} | **الرصيد المتوفر حالياً:** `{inv_info['qty']}` | **موقع الرف:** `{inv_info['location']}`"
+        qty_val = inv_info['qty']
+        card = f"📦 **اسم القطعة:** {inv_info['name']} | **الرصيد المتوفر حالياً:** `{qty_val}` | **موقع الرف:** `{inv_info['location']}`"
         return code, card
     return code, ""
 
@@ -564,7 +652,7 @@ def send_instant_purchase_order(selected_part_entry):
         f"🔹 *الرصيد المتبقي حالياً:* `{inv_info['qty']}`\n"
         f"🔹 *حد الأمان الأدنى للمستودع:* `{inv_info.get('min_stock', '2')}`\n"
         f"🔹 *موقع التخزين والرف:* {inv_info['location']}\n\n"
-        f"⚠️ *درجة الأهمية:* عاجل جداً لتفادي أي توقف مفاجئ في خطوط الإنتاج والذبح.\n"
+        f"⚠️️ *درجة الأهمية:* عاجل جداً لتفادي أي توقف مفاجئ في خطوط الإنتاج والذبح.\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"شاكرين لكم حسن التعاون،،\n"
         f"م. فادي محمود"
@@ -783,7 +871,7 @@ def extract_pm_checklist_for_machine(machine_name):
     maint_pdf = m_data.get("maintenance_manual") or (m_data["other_files"][0] if m_data.get("other_files") else None)
     
     if not maint_pdf or not os.path.exists(maint_pdf):
-        return None, f"⚠️ لا يتوفر كتالوج صيانة مسجل لماكينة **{machine_name}**."
+        return None, f"⚠️️ لا يتوفر كتالوج صيانة مسجل لماكينة **{machine_name}**."
 
     matched_pm_pages = []
     target_filename = os.path.basename(maint_pdf)
@@ -1094,7 +1182,7 @@ def maintenance_copilot(query, input_image=None):
             if not clean_q:
                 tz = pytz.timezone('Asia/Hebron')
                 timestamp = datetime.now(tz).strftime('%Y-%m-%d %I:%M %p')
-                fail_msg = f"⚠️ *تنبيه فحص ميداني - مسلخ عزيزا*\n⏰ الوقت: {timestamp}\n📸 تم رفع صورة قطعة لم يتعرف عليها النظام تلقائياً، يرجى التحقق اليدوي."
+                fail_msg = f"⚠️️ *تنبيه فحص ميداني - مسلخ عزيزا*\n⏰ الوقت: {timestamp}\n📸 تم رفع صورة قطعة لم يتعرف عليها النظام تلقائياً، يرجى التحقق اليدوي."
                 send_whatsapp_alert(fail_msg)
                 return "❌ لم يتم العثور على صورة متطابقة بصرياً مع قطع المستودع المفهرسة. يرجى إدخال اسم الماكينة، كود الإنذار، أو رقم القطعة كتابةً.\n---\n📲 تم إرسال إشعار لطاقم الصيانة بالمتابعة.", None, None, None, None, None
 
@@ -1263,7 +1351,7 @@ def clear_all_inputs():
 # 11. إعداد الترويسة والشعار بأمان تام
 # ==========================================
 logo_base64 = ""
-for p in ["logo.png", "/app/logo.png"]:
+for p in ["logo.png", "/app/logo.png", "AzizaLogo.png"]:
     if os.path.exists(p):
         try:
             with open(p, "rb") as f:
@@ -1286,7 +1374,7 @@ HEADER_HTML = """
             </div>
             <div>
                 <h1 style="margin: 0; font-size: 23px; font-weight: 800; color: #ffffff;">شركة دواجن فلسطين - مسلخ عزيزا</h1>
-                <p style="margin: 4px 0 0 0; font-size: 14px; color: #e8f5e9;">منصة الصيانة الهندسية الذكية (إدارة حركة المستودع بالاسم والكود • ربط Google Sheets • قرارات التوريد)</p>
+                <p style="margin: 4px 0 0 0; font-size: 14px; color: #e8f5e9;">منصة الصيانة الهندسية الذكية (إدارة حركة المستودع بالأرشفة الشهرية • تنبيهات الصفر الفورية • قرارات التوريد)</p>
             </div>
         </div>
         <div style="border-right: 2px solid rgba(255,255,255,0.25); padding-right: 20px;">
@@ -1304,7 +1392,7 @@ with gr.Blocks(title="منصة الصيانة الهندسية الذكية - م
     gr.HTML(HEADER_HTML)
     
     with gr.Row():
-        status_box = gr.Markdown(f"📊 **حالة النظام:** تم تجهيز وفهرسة `{total_manuals}` كتالوج فني، وتفعيل البحث بالاسم والكود لإدارة المخزون مع Google Sheets ومؤشرات الأداء اللحظية (KPIs).")
+        status_box = gr.Markdown(f"📊 **حالة النظام:** تم تجهيز وفهرسة `{total_manuals}` كتالوج فني، وتفعيل الأرشفة الشهرية الحية مع Google Sheets ونظام إنذار نفاد المخزون (Zero-Stock Alert).")
         
     with gr.Tabs():
         # التبويب الأول: البحث الذكي والتشخيص
@@ -1341,13 +1429,12 @@ with gr.Blocks(title="منصة الصيانة الهندسية الذكية - م
                         matched_catalog_page_output = gr.Image(type="filepath", label="صفحات جدول الأعطال الكاملة (مدمجة)")
 
         # التبويب الثاني: إدارة حركات المخزون وصرف/إضافة قطع الغيار بالاسم والكود
-        with gr.Tab("📦 إدارة حركات المخزون (بحث بالاسم • صرف • توريد)") as stock_tab:
+        with gr.Tab("📦 إدارة حركات المخزون (أرشفة شهرية • صرف • توريد)") as stock_tab:
             with gr.Row():
                 # نموذج صرف / سحب قطعة غيار من المستودع
                 with gr.Column(scale=1):
                     gr.Markdown("### 📤 صرف / سحب قطعة غيار من المستودع (Stock Issue)")
                     
-                    # قائمة البحث والاختيار بالاسم والكود معاً
                     part_search_dropdown = gr.Dropdown(
                         label="🔍 ابحث واختر القطعة باسمها المخزن في Google Sheets:",
                         choices=[],
@@ -1359,6 +1446,9 @@ with gr.Blocks(title="منصة الصيانة الهندسية الذكية - م
                     withdraw_tech_in = gr.Textbox(label="اسم الفني المستلم:", placeholder="اسم الفني أو المشرف")
                     withdraw_mach_in = gr.Dropdown(choices=available_machines_list, label="الماكينة المستهدفة بالصيانة:", value=available_machines_list[0] if available_machines_list else None)
                     withdraw_btn = gr.Button("خصم من المستودع وتحديث Google Sheet 📤", variant="primary")
+                    
+                    # بنر تنبيه نفاد الرصيد المباشر للفني
+                    stock_zero_alert_html = gr.HTML(visible=False)
                     withdraw_status_out = gr.Markdown()
 
                 # نموذج إضافة صنف جديد أو توريد رصيد إضافي
@@ -1382,7 +1472,7 @@ with gr.Blocks(title="منصة الصيانة الهندسية الذكية - م
             withdraw_btn.click(
                 fn=withdraw_part_from_sheet,
                 inputs=[part_search_dropdown, withdraw_code_in, withdraw_qty_in, withdraw_tech_in, withdraw_mach_in],
-                outputs=[withdraw_status_out]
+                outputs=[withdraw_status_out, stock_zero_alert_html]
             )
 
             add_part_btn.click(
@@ -1391,7 +1481,6 @@ with gr.Blocks(title="منصة الصيانة الهندسية الذكية - م
                 outputs=[add_part_status_out]
             )
 
-            # تحديث قائمة الأسماء عند الدخول للتبويب
             stock_tab.select(
                 fn=lambda: gr.update(choices=get_parts_selection_list()),
                 outputs=[part_search_dropdown]
