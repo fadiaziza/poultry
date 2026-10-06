@@ -10,11 +10,18 @@ import fitz  # PyMuPDF
 import requests
 from datetime import datetime
 import pytz
+import logging
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 from collections import Counter
 from PIL import Image
 import gradio as gr
 from google.cloud import storage
 from google import genai
+
+def get_hebron_timestamp(format_str='%Y-%m-%d %I:%M %p'):
+    tz = pytz.timezone('Asia/Hebron')
+    return datetime.now(tz).strftime(format_str)
 
 # ==========================================
 # 0. إعدادات السحابة والمنفذ والذكاء الاصطناعي
@@ -27,7 +34,7 @@ IMAGE_DIR = os.path.join(BASE_DIR, "Real_Parts_Images")
 LOG_FILE_PATH = "/tmp/maintenance_search_log.csv"
 
 # رابط جدول Google Sheets للقراءة
-SHEET_ID = "1_scf-CUSouwQvJan4d12UuC7LX8eHC7E4YAjC41q2r4"
+SHEET_ID = os.environ.get("SHEET_ID", "1_scf-CUSouwQvJan4d12UuC7LX8eHC7E4YAjC41q2r4")
 GOOGLE_SHEET_CSV_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv"
 
 # رابط الويب هوك الخاص بك لتحديث وإضافة القطع والأرشفة الشهرية
@@ -42,7 +49,7 @@ if GEMINI_API_KEY:
     try:
         ai_client = genai.Client(api_key=GEMINI_API_KEY)
     except Exception as e:
-        print(f"[!] Warning initializing Gemini API: {e}")
+        logging.warning(f"[!] Warning initializing Gemini API: {e}")
 
 machine_catalogs_db = {}
 available_machines_list = []
@@ -51,7 +58,7 @@ def sync_data_from_gcs():
     global machine_catalogs_db, available_machines_list
     os.makedirs(BASE_DIR, exist_ok=True)
     os.makedirs(IMAGE_DIR, exist_ok=True)
-    print(f"[*] Starting download from GCS bucket: {BUCKET_NAME}...")
+    logging.info(f"[*] Starting download from GCS bucket: {BUCKET_NAME}...")
     try:
         client = storage.Client()
         bucket = client.bucket(BUCKET_NAME)
@@ -67,9 +74,9 @@ def sync_data_from_gcs():
             if not os.path.exists(dest_path):
                 blob.download_to_filename(dest_path)
                 count += 1
-        print(f"[✓] GCS Sync completed. Downloaded {count} files.")
+        logging.info(f"[✓] GCS Sync completed. Downloaded {count} files.")
     except Exception as e:
-        print(f"[!] Warning during GCS sync: {e}")
+        logging.warning(f"[!] Warning during GCS sync: {e}")
 
     build_machine_catalog_groups()
 
@@ -131,18 +138,18 @@ def build_machine_catalog_groups():
                 machine_catalogs_db[assigned_group]["other_files"].append(p)
 
     available_machines_list = sorted(list(machine_catalogs_db.keys()))
-    print(f"[✓] Grouped {len(pdf_list)} manuals into {len(available_machines_list)} machine families.")
+    logging.info(f"[✓] Grouped {len(pdf_list)} manuals into {len(available_machines_list)} machine families.")
 
 sync_data_from_gcs()
 
 # ==========================================
 # 1. إعدادات تنبيهات الواتساب (Green-API)
 # ==========================================
-ID_INSTANCE = "710722737613"
-API_TOKEN_INSTANCE = "8902219901b2411cb1ebfa944bbfc3d7d499d671111c4fe18e"
+ID_INSTANCE = os.environ.get("ID_INSTANCE", "")
+API_TOKEN_INSTANCE = os.environ.get("API_TOKEN_INSTANCE", "")
 
-ALERT_GROUP_ID = "970599431267@c.us" # رقم المهندس فادي محمود (المشرف المباشر)
-PURCHASING_MANAGER_PHONE = "972595470033@c.us" # مسؤول المشتريات أحمد حطاب
+ALERT_GROUP_ID = os.environ.get("ALERT_GROUP_ID", "970599431267@c.us") # رقم المهندس فادي محمود (المشرف المباشر)
+PURCHASING_MANAGER_PHONE = os.environ.get("PURCHASING_MANAGER_PHONE", "972595470033@c.us") # مسؤول المشتريات أحمد حطاب
 
 def send_whatsapp_alert(message, target_phone=None):
     if not API_TOKEN_INSTANCE or "YOUR_GREEN_API" in API_TOKEN_INSTANCE:
@@ -157,14 +164,13 @@ def send_whatsapp_alert(message, target_phone=None):
     try:
         requests.post(url, json=payload, timeout=5)
     except Exception as err:
-        print(f"[!] WhatsApp notification error: {err}")
+        logging.error(f"[!] WhatsApp notification error: {err}")
 
 # ==========================================
 # 2. محرك تسجيل وتوثيق العمليات في الإكسل (Audit Logger)
 # ==========================================
 def log_search_query(raw_query, hit_type, machine_name, part_name, part_code, stock_info):
-    tz = pytz.timezone('Asia/Hebron')
-    timestamp = datetime.now(tz).strftime('%Y-%m-%d %I:%M:%S %p')
+    timestamp = get_hebron_timestamp('%Y-%m-%d %I:%M:%S %p')
     
     file_exists = os.path.exists(LOG_FILE_PATH)
     try:
@@ -206,9 +212,9 @@ def log_search_query(raw_query, hit_type, machine_name, part_name, part_code, st
                 qty,
                 loc
             ])
-            print(f"[✓] Logged: Machine='{machine_name}', Part='{part_name}', Code='{part_code}'")
+            logging.info(f"[✓] Logged: Machine='{machine_name}', Part='{part_name}', Code='{part_code}'")
     except Exception as e:
-        print(f"[!] Error writing search log: {e}")
+        logging.error(f"[!] Error writing search log: {e}")
 
 # ==========================================
 # 3. محرك مخزون قطع الغيار من Google Sheets
@@ -261,9 +267,9 @@ def fetch_inventory_data(force_refresh=False):
 
                 inventory_cache["data"] = data_map
                 inventory_cache["last_sync"] = current_time
-                print(f"[✓] Google Sheet Connected: {len(data_map)} items loaded.")
+                logging.info(f"[✓] Google Sheet Connected: {len(data_map)} items loaded.")
     except Exception as e:
-        print(f"[!] Error fetching Google Sheet: {e}")
+        logging.error(f"[!] Error fetching Google Sheet: {e}")
 
     return inventory_cache["data"]
 
@@ -335,10 +341,8 @@ def withdraw_part_from_sheet(selected_part, custom_code_in, qty_to_withdraw, tec
         except Exception:
             current_qty = 0
 
-    tz = pytz.timezone('Asia/Hebron')
-    now = datetime.now(tz)
-    timestamp = now.strftime('%Y-%m-%d %I:%M %p')
-    current_month_sheet = f"Log_{now.strftime('%Y_%m')}" # اسم ورقة الأرشيف الشهرية التلقائية
+    timestamp = get_hebron_timestamp()
+    current_month_sheet = f"Log_{datetime.now(pytz.timezone('Asia/Hebron')).strftime('%Y_%m')}" # اسم ورقة الأرشيف الشهرية التلقائية
 
     payload = {
         "action": "withdraw",
@@ -360,7 +364,7 @@ def withdraw_part_from_sheet(selected_part, custom_code_in, qty_to_withdraw, tec
         if "new_stock" in res_data:
             new_stock = float(res_data["new_stock"])
     except Exception as err:
-        print(f"[!] Webhook error: {err}")
+        logging.error(f"[!] Webhook error: {err}")
 
     fetch_inventory_data(force_refresh=True)
 
@@ -454,10 +458,8 @@ def add_new_part_to_sheet(raw_code, part_name, initial_qty, storage_location, mi
         gr.Warning("⚠ يرجى التأكد من كتابة الأرقام بشكل صحيح.")
         return "⚠ يرجى التأكد من كتابة الأرقام بشكل صحيح."
 
-    tz = pytz.timezone('Asia/Hebron')
-    now = datetime.now(tz)
-    timestamp = now.strftime('%Y-%m-%d %I:%M %p')
-    current_month_sheet = f"Log_{now.strftime('%Y_%m')}"
+    timestamp = get_hebron_timestamp()
+    current_month_sheet = f"Log_{datetime.now(pytz.timezone('Asia/Hebron')).strftime('%Y_%m')}"
 
     payload = {
         "action": "add_or_update",
@@ -479,7 +481,7 @@ def add_new_part_to_sheet(raw_code, part_name, initial_qty, storage_location, mi
             gr.Warning(f"❌ خطأ من Google Sheets: {res_data.get('message')}")
             return f"❌ خطأ من Google Sheets: {res_data.get('message')}"
     except Exception as err:
-        print(f"[!] Webhook error: {err}")
+        logging.error(f"[!] Webhook error: {err}")
 
     fetch_inventory_data(force_refresh=True)
 
@@ -569,7 +571,7 @@ def generate_kpi_dashboard_data():
                             if p_name and p_name not in ["—", "غير مسجل", ""]:
                                 parts_counter[p_name] += 1
         except Exception as e:
-            print(f"[!] Error reading logs for KPI: {e}")
+            logging.error(f"[!] Error reading logs for KPI: {e}")
 
     top_machines = machine_counter.most_common(5)
     top_parts = parts_counter.most_common(5)
@@ -634,8 +636,7 @@ def send_instant_purchase_order(selected_part_entry):
     if not inv_info:
         return f"⚠️ تعذر العثور على بيانات القطعة `{part_code}`."
 
-    tz = pytz.timezone('Asia/Hebron')
-    timestamp = datetime.now(tz).strftime('%Y-%m-%d %I:%M %p')
+    timestamp = get_hebron_timestamp()
 
     po_message = (
         f"📋 *طلب شراء وتوريد قطع غيار عاجل*\n"
@@ -659,7 +660,7 @@ def send_instant_purchase_order(selected_part_entry):
     )
 
     send_whatsapp_alert(po_message, target_phone=PURCHASING_MANAGER_PHONE)
-    print(f"[✓] Purchase Order sent via WhatsApp to Ahmed Hattab (+972595470033) for: {inv_info['raw_code']}")
+    logging.info(f"[✓] Purchase Order sent via WhatsApp to Ahmed Hattab (+972595470033) for: {inv_info['raw_code']}")
 
     return f"✅ **تم إرسال طلب الشراء الرسمي بنجاح عبر الواتساب** إلى مسؤول المشتريات **أحمد حطاب** (+972595470033) من **م. فادي محمود** للقطعة: `{inv_info['raw_code']} - {inv_info['name']}`."
 
@@ -675,7 +676,7 @@ def render_pdf_page_to_image(filepath, page_num):
         pix.save(out_img_path)
         return out_img_path
     except Exception as e:
-        print(f"[!] Error rendering PDF page to image: {e}")
+        logging.error(f"[!] Error rendering PDF page to image: {e}")
         return None
 
 def render_troubleshooting_pages_stitched(filepath, page_list):
@@ -706,7 +707,7 @@ def render_troubleshooting_pages_stitched(filepath, page_list):
         combined_img.save(out_combined_path)
         return out_combined_path
     except Exception as e:
-        print(f"[!] Error stitching troubleshooting pages: {e}")
+        logging.error(f"[!] Error stitching troubleshooting pages: {e}")
         return render_pdf_page_to_image(filepath, page_list[0])
 
 def render_machine_cover_image(filepath):
@@ -718,7 +719,7 @@ def render_machine_cover_image(filepath):
         pix.save(out_img_path)
         return out_img_path
     except Exception as e:
-        print(f"[!] Error rendering machine cover image: {e}")
+        logging.error(f"[!] Error rendering machine cover image: {e}")
         return None
 
 def get_img_sig(img):
@@ -748,7 +749,7 @@ def build_image_index():
                     image_signatures[part_no] = (get_img_sig(im), img_path)
             except Exception:
                 pass
-    print(f"[✓] Indexed {len(image_signatures)} part images for visual comparison.")
+    logging.info(f"[✓] Indexed {len(image_signatures)} part images for visual comparison.")
 
 build_image_index()
 
@@ -772,7 +773,7 @@ def match_uploaded_image(uploaded_img):
         if min_diff <= 65:
             return best_part[0], best_part[1]
     except Exception as e:
-        print(f"[!] Vision matching error: {e}")
+        logging.error(f"[!] Vision matching error: {e}")
     return None, None
 
 def find_image_for_part(query_text):
@@ -840,7 +841,7 @@ def build_manual_index():
     global manual_pages
     manual_pages = []
     pdf_files = glob.glob(os.path.join(BASE_DIR, "**/*.pdf"), recursive=True)
-    print(f"[*] Indexing {len(pdf_files)} PDF manuals...")
+    logging.info(f"[*] Indexing {len(pdf_files)} PDF manuals...")
     for pdf_path in pdf_files:
         filename = os.path.basename(pdf_path)
         try:
@@ -856,7 +857,7 @@ def build_manual_index():
                     })
         except Exception:
             pass
-    print(f"[✓] Successfully indexed {len(manual_pages)} pages.")
+    logging.info(f"[✓] Successfully indexed {len(manual_pages)} pages.")
 
 build_manual_index()
 
@@ -996,7 +997,7 @@ MANDATORY INSTRUCTIONS:
         )
         return response.text.strip()
     except Exception as err:
-        print(f"[!] Gemini API Error: {err}")
+        logging.error(f"[!] Gemini API Error: {err}")
         return ""
 
 # ==========================================
@@ -1180,8 +1181,7 @@ def maintenance_copilot(query, input_image=None):
                 recorded_code = matched_part_no
         else:
             if not clean_q:
-                tz = pytz.timezone('Asia/Hebron')
-                timestamp = datetime.now(tz).strftime('%Y-%m-%d %I:%M %p')
+                timestamp = get_hebron_timestamp()
                 fail_msg = f"⚠️️ *تنبيه فحص ميداني - مسلخ عزيزا*\n⏰ الوقت: {timestamp}\n📸 تم رفع صورة قطعة لم يتعرف عليها النظام تلقائياً، يرجى التحقق اليدوي."
                 send_whatsapp_alert(fail_msg)
                 return "❌ لم يتم العثور على صورة متطابقة بصرياً مع قطع المستودع المفهرسة. يرجى إدخال اسم الماكينة، كود الإنذار، أو رقم القطعة كتابةً.\n---\n📲 تم إرسال إشعار لطاقم الصيانة بالمتابعة.", None, None, None, None, None
@@ -1320,8 +1320,7 @@ def maintenance_copilot(query, input_image=None):
     if matched_catalog_page_img:
         response.append("📖 **تم دمج وعرض صفحات جدول الأعطال الكاملة للتوثيق في المربع الأيمن.**")
 
-    tz = pytz.timezone('Asia/Hebron')
-    timestamp = datetime.now(tz).strftime('%Y-%m-%d %I:%M %p')
+    timestamp = get_hebron_timestamp()
     alert_msg = f"🔔 *إشعار صيانة وتشخيص - مسلخ عزيزا*\n"
     alert_msg += f"⏰ الوقت: {timestamp}\n"
     alert_msg += f"🏭 الماكينة: {recorded_machine_name}\n"
