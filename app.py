@@ -1645,7 +1645,7 @@ if __name__ == "__main__":
         server_name="0.0.0.0",
         server_port=PORT,
         allowed_paths=["/tmp"],
-        share=True,
+        share=False,
         auth=AUTH_USERS,
         auth_message="يرجى إدخال اسم المستخدم وكلمة المرور للدخول إلى نظام الصيانة"
     )
