@@ -1641,11 +1641,11 @@ with gr.Blocks(title="منصة الصيانة الهندسية الذكية - م
     )
 
 if __name__ == "__main__":
-        demo.launch(
+    demo.launch(
         server_name="0.0.0.0",
         server_port=PORT,
         allowed_paths=["/tmp"],
         share=False,
-        auth=AUTH_USERS,
-        auth_message="يرجى إدخال اسم المستخدم وكلمة المرور للدخول إلى نظام الصيانة"
+        auth=AUTH_USERS
     )
+
