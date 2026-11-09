@@ -144,7 +144,7 @@ def build_machine_catalog_groups():
     available_machines_list = sorted(list(machine_catalogs_db.keys()))
     print(f"[✓] Grouped {len(pdf_list)} manuals into {len(available_machines_list)} machine families.")
 
-sync_data_from_gcs()
+#sync_data_from_gcs()
 
 # ==========================================
 # 2. إعدادات تنبيهات الواتساب (Green-API)
