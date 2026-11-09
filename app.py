@@ -15,19 +15,20 @@ from PIL import Image
 import gradio as gr
 from google.cloud import storage
 from google import genai
+
 # ==========================================
-# بيانات تسجيل الدخول لطاقم الصيانة والمدير
+# 0. نظام المصادقة والحسابات المعتمدة (Security & Auth)
 # ==========================================
 AUTH_USERS = [
-    ("fadi", "Fadi@2026"),        # المهندس فادي محمود (مشرف الصيانة)
-    ("hafez", "Hafez@2026"),      # المهندس حافظ نور (طاقم الصيانة)
-    ("montaser", "Montaser@2026"),# المهندس منتصر زقدح (طاقم الصيانة)
-    ("mujahed", "Mujahed@2026"),  # المهندس مجاهد محمود (طاقم الصيانة)
-    ("gm", "GM@2026")             # المدير العام (لمراقبة مؤشرات الأداء)
+    ("fadi", "Fadi@2026"),          # المهندس فادي محمود (مشرف الصيانة والأتمتة)
+    ("hafez", "Hafez@2026"),        # المهندس حافظ نور (طاقم الصيانة)
+    ("montaser", "Montaser@2026"),  # المهندس منتصر زقدح (طاقم الصيانة)
+    ("mujahed", "Mujahed@2026"),    # المهندس مجاهد (طاقم الصيانة)
+    ("gm", "GM@2026")               # المدير العام (متابعة مؤشرات الأداء والتقارير)
 ]
-مخ
+
 # ==========================================
-# 0. إعدادات السحابة والمنفذ والذكاء الاصطناعي
+# 1. إعدادات السحابة والمنفذ والذكاء الاصطناعي
 # ==========================================
 PORT = int(os.environ.get("PORT", 8080))
 BUCKET_NAME = "aziza-manuals-storage"
@@ -40,7 +41,7 @@ LOG_FILE_PATH = "/tmp/maintenance_search_log.csv"
 SHEET_ID = "1_scf-CUSouwQvJan4d12UuC7LX8eHC7E4YAjC41q2r4"
 GOOGLE_SHEET_CSV_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv"
 
-# رابط الويب هوك الخاص بك لتحديث وإضافة القطع والأرشفة الشهرية
+# رابط الويب هوك الخاص بتحديث وإضافة القطع والأرشفة الشهرية
 SHEET_WEBHOOK_URL = os.environ.get(
     "SHEET_WEBHOOK_URL", 
     "https://script.google.com/macros/s/AKfycbwKYnWN2z8TQrV-Qb8CuO1YW_SbpQrVjHJSPriSzBwXDCgyaQNc59jqGTykqNY9e5LAAg/exec"
@@ -146,7 +147,7 @@ def build_machine_catalog_groups():
 sync_data_from_gcs()
 
 # ==========================================
-# 1. إعدادات تنبيهات الواتساب (Green-API)
+# 2. إعدادات تنبيهات الواتساب (Green-API)
 # ==========================================
 ID_INSTANCE = "710722737613"
 API_TOKEN_INSTANCE = "8902219901b2411cb1ebfa944bbfc3d7d499d671111c4fe18e"
@@ -170,7 +171,7 @@ def send_whatsapp_alert(message, target_phone=None):
         print(f"[!] WhatsApp notification error: {err}")
 
 # ==========================================
-# 2. محرك تسجيل وتوثيق العمليات في الإكسل (Audit Logger)
+# 3. محرك تسجيل وتوثيق العمليات في الإكسل (Audit Logger)
 # ==========================================
 def log_search_query(raw_query, hit_type, machine_name, part_name, part_code, stock_info):
     tz = pytz.timezone('Asia/Hebron')
@@ -221,7 +222,7 @@ def log_search_query(raw_query, hit_type, machine_name, part_name, part_code, st
         print(f"[!] Error writing search log: {e}")
 
 # ==========================================
-# 3. محرك مخزون قطع الغيار من Google Sheets
+# 4. محرك مخزون قطع الغيار من Google Sheets
 # ==========================================
 inventory_cache = {
     "data": {},
@@ -306,10 +307,9 @@ def get_parts_selection_list():
     return sorted(choices)
 
 # ==========================================
-# 4. محرك تعديل وإضافة قطع الغيار التفاعلي مع الأرشفة الشهرية وتنبيه الصفر
+# 5. محرك تعديل وإضافة قطع الغيار مع الأرشفة وتنبيه الصفر
 # ==========================================
 def withdraw_part_from_sheet(selected_part, custom_code_in, qty_to_withdraw, technician_name, machine_destination):
-    """دالة سحب / صرف قطعة غيار وتحديث الرصيد مع الأرشفة الشهرية وإرسال تنبيه واتساب مباشر عند وصول الرصيد إلى صفر"""
     code_to_use = ""
     name_to_use = ""
     
@@ -325,13 +325,12 @@ def withdraw_part_from_sheet(selected_part, custom_code_in, qty_to_withdraw, tec
     try:
         qty_num = float(qty_to_withdraw)
         if qty_num <= 0:
-            gr.Warning("⚠️️ يرجى تحديد كمية صالحة أكبر من الصفر.")
+            gr.Warning("⚠ يرجى تحديد كمية صالحة أكبر من الصفر.")
             return "⚠️ يرجى تحديد كمية صالحة أكبر من الصفر.", gr.update(visible=False)
     except Exception:
         gr.Warning("⚠️ الكمية المدخلة غير صحيحة.")
         return "⚠️ الكمية المدخلة غير صحيحة.", gr.update(visible=False)
 
-    # 1. الاستعلام المسبق عن الرصيد الحالي لمعرفة ما إذا كان الصرف سيصل لصفر
     inv_info = get_part_inventory_info(code_to_use)
     if not inv_info and name_to_use:
         inv_info = get_part_inventory_info(name_to_use)
@@ -348,7 +347,7 @@ def withdraw_part_from_sheet(selected_part, custom_code_in, qty_to_withdraw, tec
     tz = pytz.timezone('Asia/Hebron')
     now = datetime.now(tz)
     timestamp = now.strftime('%Y-%m-%d %I:%M %p')
-    current_month_sheet = f"Log_{now.strftime('%Y_%m')}" # اسم ورقة الأرشيف الشهرية التلقائية
+    current_month_sheet = f"Log_{now.strftime('%Y_%m')}"
 
     payload = {
         "action": "withdraw",
@@ -383,7 +382,6 @@ def withdraw_part_from_sheet(selected_part, custom_code_in, qty_to_withdraw, tec
         {"qty": f"-{qty_num}", "location": inv_info.get("location", "مستودع المسلخ") if inv_info else "مستودع المسلخ"}
     )
 
-    # 2. رسالة إشعار الصرف الاعتيادية
     standard_msg = (
         f"📤 *إشعار صرف قطعة غيار من المستودع*\n"
         f"🏢 مسلخ عزيزا - قسم الصيانة والأتمتة\n"
@@ -398,7 +396,6 @@ def withdraw_part_from_sheet(selected_part, custom_code_in, qty_to_withdraw, tec
     )
     send_whatsapp_alert(standard_msg)
 
-    # 3. الشرط الحاسم: إذا وصل الرصيد إلى صفر (تنبيه فوري لطلب الشراء على واتساب م. فادي + تنبيه أحمر للفني)
     if new_stock <= 0:
         gr.Warning(f"🚨 تنبيه عاجل: لقد نفد رصيد القطعة ({name_to_use}) بالكامل (الرصيد: 0)! تم إرسال تنبيه فوري للمشرف.")
         
@@ -418,7 +415,7 @@ def withdraw_part_from_sheet(selected_part, custom_code_in, qty_to_withdraw, tec
             f"🏭 *الماكينة المستلمة:* {machine_destination if machine_destination else 'غير محدد'}\n\n"
             f"⚡ *الإجراء المطلوب:* يرجى إصدار طلب توريد / شراء عاجل لتفادي توقف خطوط الإنتاج والذبح."
         )
-        send_whatsapp_alert(zero_alert_msg, target_phone=ALERT_GROUP_ID) # إرسال إلى رقمك الخاص مباشرة
+        send_whatsapp_alert(zero_alert_msg, target_phone=ALERT_GROUP_ID)
 
         alert_banner = f"""
         <div style="background-color: #fef2f2; border: 2px solid #ef4444; border-right: 8px solid #dc2626; padding: 18px; border-radius: 12px; margin-top: 15px; direction: rtl; text-align: right;">
@@ -445,7 +442,6 @@ def withdraw_part_from_sheet(selected_part, custom_code_in, qty_to_withdraw, tec
         return success_msg, gr.update(visible=False)
 
 def add_new_part_to_sheet(raw_code, part_name, initial_qty, storage_location, min_stock):
-    """دالة إضافة قطعة غيار جديدة أو توريد رصيد مع التوثيق في الأرشيف الشهري"""
     if not raw_code or not str(raw_code).strip():
         gr.Warning("⚠️ يرجى إدخال كود القطعة.")
         return "⚠️ يرجى إدخال كود القطعة."
@@ -523,7 +519,7 @@ def on_part_selection_change(selected_entry):
     return code, ""
 
 # ==========================================
-# 5. محرك تحليلات ومؤشرات الأداء (KPI Engine)
+# 6. محرك مؤشرات الأداء والقرارات (KPI Engine)
 # ==========================================
 def generate_kpi_dashboard_data():
     inv_data = fetch_inventory_data()
@@ -662,7 +658,7 @@ def send_instant_purchase_order(selected_part_entry):
         f"🔹 *الرصيد المتبقي حالياً:* `{inv_info['qty']}`\n"
         f"🔹 *حد الأمان الأدنى للمستودع:* `{inv_info.get('min_stock', '2')}`\n"
         f"🔹 *موقع التخزين والرف:* {inv_info['location']}\n\n"
-        f"⚠️️ *درجة الأهمية:* عاجل جداً لتفادي أي توقف مفاجئ في خطوط الإنتاج والذبح.\n"
+        f"⚠ *درجة الأهمية:* عاجل جداً لتفادي أي توقف مفاجئ في خطوط الإنتاج والذبح.\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"شاكرين لكم حسن التعاون،،\n"
         f"م. فادي محمود"
@@ -674,7 +670,7 @@ def send_instant_purchase_order(selected_part_entry):
     return f"✅ **تم إرسال طلب الشراء الرسمي بنجاح عبر الواتساب** إلى مسؤول المشتريات **أحمد حطاب** (+972595470033) من **م. فادي محمود** للقطعة: `{inv_info['raw_code']} - {inv_info['name']}`."
 
 # ==========================================
-# 6. دوال استخراج ومعالجة الصور ودمج الصفحات
+# 7. دوال استخراج ومعالجة الصور ودمج الصفحات
 # ==========================================
 def render_pdf_page_to_image(filepath, page_num):
     try:
@@ -871,7 +867,7 @@ def build_manual_index():
 build_manual_index()
 
 # ==========================================
-# 7. محرك الصيانة الدورية وقوائم الفحص (PM Checklist Engine)
+# 8. محرك الصيانة الدورية وقوائم الفحص (PM Checklist Engine)
 # ==========================================
 def extract_pm_checklist_for_machine(machine_name):
     if not machine_name or machine_name not in machine_catalogs_db:
@@ -881,7 +877,7 @@ def extract_pm_checklist_for_machine(machine_name):
     maint_pdf = m_data.get("maintenance_manual") or (m_data["other_files"][0] if m_data.get("other_files") else None)
     
     if not maint_pdf or not os.path.exists(maint_pdf):
-        return None, f"⚠️️ لا يتوفر كتالوج صيانة مسجل لماكينة **{machine_name}**."
+        return None, f"⚠ لا يتوفر كتالوج صيانة مسجل لماكينة **{machine_name}**."
 
     matched_pm_pages = []
     target_filename = os.path.basename(maint_pdf)
@@ -939,7 +935,7 @@ MANDATORY INSTRUCTIONS:
         final_md = f"""
 ## 📋 جدول الصيانة الدورية والفحص الوقائي (PM Checklist)
 ### 🏭 الماكينة: **{machine_name}**
-* 📖 **المرجع من الكتالوج:** `{target_filename}` (صفحة رقم {best_page['page']})
+- 📖 **المرجع من الكتالوج:** `{target_filename}` (صفحة رقم {best_page['page']})
 
 {checklist_text}
 """
@@ -963,14 +959,14 @@ Format as an executive Markdown Table.
         final_md = f"""
 ## 📋 جدول الصيانة الدورية والفحص الوقائي المعتمد (PM Inspection Checklist)
 ### 🏭 الماكينة: **{machine_name}**
-* 📖 **المرجع:** كتالوج الصيانة المعتمد للماكينة `{target_filename}`
+- 📖 **المرجع:** كتالوج الصيانة المعتمد للماكينة `{target_filename}`
 
 {checklist_text}
 """
         return first_img, final_md
 
 # ==========================================
-# 8. محرك Gemini لاستخراج جميع الأعطال بالكامل
+# 9. محرك Gemini لاستخراج جميع الأعطال بالكامل
 # ==========================================
 def ask_gemini_engineer(user_query, context_text):
     if not ai_client or not context_text:
@@ -1010,7 +1006,7 @@ MANDATORY INSTRUCTIONS:
         return ""
 
 # ==========================================
-# 9. محرك البحث الذكي (متعدد الصفحات للأعطال)
+# 10. محرك البحث الذكي (متعدد الصفحات للأعطال)
 # ==========================================
 def search_engine(query, top_k=5):
     if not manual_pages:
@@ -1160,15 +1156,15 @@ def view_machine_paired_catalogs(machine_name):
 
     info_md = f"""
 ### 🏭 منظومة كتالوجات: **{machine_name}**
-* 🔧 **كتالوج الصيانة والتشغيل (Maintenance Manual):** `{maint_name}`
-* ⚙️ **كتالوج قطع الغيار (Spare Parts Catalog):** `{parts_name}`
+- 🔧 **كتالوج الصيانة والتشغيل (Maintenance Manual):** `{maint_name}`
+- ⚙️ **كتالوج قطع الغيار (Spare Parts Catalog):** `{parts_name}`
 
 > 💡 يمكنك الآن تحميل أي من الكتالوجين المرتبطين بالماكينة مباشرة من الأزرار أدناه.
 """
     return maint_pdf, parts_pdf, cover_img, info_md
 
 # ==========================================
-# 10. دالة المعالجة والتوجيه الرئيسية
+# 11. دالة المعالجة والتوجيه الرئيسية
 # ==========================================
 def maintenance_copilot(query, input_image=None):
     clean_q = query.strip() if query else ""
@@ -1192,7 +1188,7 @@ def maintenance_copilot(query, input_image=None):
             if not clean_q:
                 tz = pytz.timezone('Asia/Hebron')
                 timestamp = datetime.now(tz).strftime('%Y-%m-%d %I:%M %p')
-                fail_msg = f"⚠️️ *تنبيه فحص ميداني - مسلخ عزيزا*\n⏰ الوقت: {timestamp}\n📸 تم رفع صورة قطعة لم يتعرف عليها النظام تلقائياً، يرجى التحقق اليدوي."
+                fail_msg = f"⚠ *تنبيه فحص ميداني - مسلخ عزيزا*\n⏰ الوقت: {timestamp}\n📸 تم رفع صورة قطعة لم يتعرف عليها النظام تلقائياً، يرجى التحقق اليدوي."
                 send_whatsapp_alert(fail_msg)
                 return "❌ لم يتم العثور على صورة متطابقة بصرياً مع قطع المستودع المفهرسة. يرجى إدخال اسم الماكينة، كود الإنذار، أو رقم القطعة كتابةً.\n---\n📲 تم إرسال إشعار لطاقم الصيانة بالمتابعة.", None, None, None, None, None
 
@@ -1358,7 +1354,7 @@ def clear_all_inputs():
     return "", None, "", None, None, None, None, None
 
 # ==========================================
-# 11. إعداد الترويسة والشعار بأمان تام
+# 12. إعداد الترويسة والشعار بأمان تام
 # ==========================================
 logo_base64 = ""
 for p in ["logo.png", "/app/logo.png", "AzizaLogo.png"]:
@@ -1441,7 +1437,6 @@ with gr.Blocks(title="منصة الصيانة الهندسية الذكية - م
         # التبويب الثاني: إدارة حركات المخزون وصرف/إضافة قطع الغيار بالاسم والكود
         with gr.Tab("📦 إدارة حركات المخزون (أرشفة شهرية • صرف • توريد)") as stock_tab:
             with gr.Row():
-                # نموذج صرف / سحب قطعة غيار من المستودع
                 with gr.Column(scale=1):
                     gr.Markdown("### 📤 صرف / سحب قطعة غيار من المستودع (Stock Issue)")
                     
@@ -1457,11 +1452,9 @@ with gr.Blocks(title="منصة الصيانة الهندسية الذكية - م
                     withdraw_mach_in = gr.Dropdown(choices=available_machines_list, label="الماكينة المستهدفة بالصيانة:", value=available_machines_list[0] if available_machines_list else None)
                     withdraw_btn = gr.Button("خصم من المستودع وتحديث Google Sheet 📤", variant="primary")
                     
-                    # بنر تنبيه نفاد الرصيد المباشر للفني
                     stock_zero_alert_html = gr.HTML(visible=False)
                     withdraw_status_out = gr.Markdown()
 
-                # نموذج إضافة صنف جديد أو توريد رصيد إضافي
                 with gr.Column(scale=1):
                     gr.Markdown("### 📥 إدخال صنف جديد أو توريد رصيد (Stock Inward)")
                     new_code_in = gr.Textbox(label="كود القطعة (Part No):", placeholder="أدخل كود القطعة المعتمد")
@@ -1472,7 +1465,6 @@ with gr.Blocks(title="منصة الصيانة الهندسية الذكية - م
                     add_part_btn = gr.Button("إدراج القطعة وتحديث Google Sheet 📥", variant="secondary")
                     add_part_status_out = gr.Markdown()
 
-            # تفاعل الاختيار التلقائي للقطعة
             part_search_dropdown.change(
                 fn=on_part_selection_change,
                 inputs=[part_search_dropdown],
@@ -1648,4 +1640,3 @@ if __name__ == "__main__":
         share=False,
         auth=AUTH_USERS
     )
-
